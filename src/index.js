@@ -10,7 +10,8 @@ const userRoutes = require("./routes/usuarios");
 const ejerciciosRoutes = require("./routes/ejercicios"); // Correcto
 const interaccionesRoutes = require("./routes/interacciones");
 const ollamaChatRoutes = require("./routes/ollamaChatRoutes");
-// const progresoRoutes = require("./routes/progresoRoutes");
+const resultadoRoutes = require("./routes/resultados");
+const progresoRoutes = require("./routes/progresoRoutes");
 
 
 const app = express();
@@ -33,7 +34,8 @@ app.use('/api/usuarios', userRoutes);
 app.use('/api/ejercicios', ejerciciosRoutes); // Montará `/` de ejercicios.js como `/api/ejercicios`
 app.use('/api/interacciones', interaccionesRoutes);
 app.use('/api/ollama', ollamaChatRoutes);
-// app.use('/api/progreso', progresoRoutes);
+app.use('/api/progreso', progresoRoutes);
+app.use('/api/resultados', resultadoRoutes);
 
 // Conectar a MongoDB
 mongoose.connect(process.env.MONGODB_URI)

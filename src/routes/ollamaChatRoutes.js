@@ -118,7 +118,7 @@ router.post("/chat/message", async (req, res) => {
     // Si el 'contextoTutor' está vacío o el ejercicio no se encuentra, usamos un prompt por defecto
     if (!systemPrompt || systemPrompt.trim() === '') {
         console.warn(`'contextoTutor' vacío o ejercicio no encontrado para la interacción ${interaccionId}. Usando prompt por defecto.`);
-        systemPrompt = `Eres un tutor virtual experto en electrónica y muy útil. Responde siempre en español. Tienes que guiar al alumno en la resolución de problemas pero NO darles la solución directamente sino ayudarles a llegar a ella, con pistas o cuestiones para que puedan razonar y acertar ellos.`;
+        systemPrompt = `Eres un tutor virtual experto en electrónica y muy útil. Responde siempre en español. Tienes que guiar al alumno en la resolución de problemas pero NO darles la solución directamente sino ayudarles a llegar a ella, con pistas o cuestiones para que puedan razonar y acertar ellos.Cuando den con la solución del ejercicio responde con: "Enhorabuena, esa es la respuesta correcta"`;
     }
  console.log("System Prompt BASE cargado/usado:", systemPrompt.substring(0, 150) + '...'); // Muestra solo los primeros 150 caracteres para no llenar la consola
     // Añadimos la información específica del ejercicio al prompt del sistema
