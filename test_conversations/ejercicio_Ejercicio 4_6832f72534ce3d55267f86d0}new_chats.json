@@ -1,0 +1,86 @@
+[
+  {
+    "turn_number": 1,
+    "user_message": "R1, R2 y R3 porque son las resistencias que forman parte del circuito",
+    "status": "FAILED",
+    "error": "read ECONNRESET"
+  },
+  {
+    "turn_number": 2,
+    "user_message": "R1, R2 y R3 porque están conectadas a la fuente de tensión",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 3,
+    "user_message": "R1, R2 y R3 porque están conectadas en paralelo",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 4,
+    "user_message": "R1, R2 y R3 porque están conectadas en serie",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 5,
+    "user_message": "R1 y R2 porque son las resistencias por las que pasa corriente",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 6,
+    "user_message": "R1 y R2 porque están conectadas en paralelo con la fuente",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 7,
+    "user_message": "R1 y R2 porque podemos eliminar R3 ya que está en circuito abierto",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 8,
+    "user_message": "R1 y R2",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 9,
+    "user_message": "R1 y R2 porque R3 se elimina",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 10,
+    "user_message": "R1 porque está conectada en paralelo con la fuente",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 11,
+    "user_message": "R2 porque R1 se puede quitar al estar en paralelo con la fuente y R3 se puede quitar al estar encircuito abierto",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 12,
+    "user_message": "R2 y R3 porque R1 se puede quitar al estar en paralelo con la fuente",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 13,
+    "user_message": "R3 porque R1 y R2 se pueden quitar al estar en paraleo con la fuente",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  },
+  {
+    "turn_number": 14,
+    "user_message": "R1 y R2 porque están conectadas en serie con la fuente",
+    "status": "FAILED",
+    "error": "Error desconocido al iniciar el chat para esta pregunta."
+  }
+]

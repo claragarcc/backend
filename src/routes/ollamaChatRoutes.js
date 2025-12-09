@@ -4,15 +4,11 @@ const Interaccion = require("../models/interaccion");
 const Ejercicio = require("../models/ejercicio");
 const mongoose = require("mongoose");
 require('dotenv').config();
-// const fs = require('fs'); // Ya no necesitamos esto para leer archivos
-// const path = require('path'); // Ya no necesitamos esto para manejar rutas de archivo de imagen
 
 const router = express.Router();
 
 const OLLAMA_API_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2";
-
-// Ya no necesitamos getImageUrl ni encodeImageToBase64
 
 // Iniciar nueva conversación
 router.post("/chat/start-exercise", async (req, res) => {
@@ -43,7 +39,7 @@ console.log("System Prompt BASE cargado/usado:", systemPrompt.substring(0, 150) 
 
     // Añadimos la información específica del ejercicio al prompt del sistema
     // Añadimos la información específica del ejercicio al prompt del sistema
-    systemPrompt += `\n\nEl ejercicio actual sobre el que te consultan es:\nTítulo: "${ejercicio.titulo}"\nEnunciado: "${ejercicio.enunciado}"`;
+   // systemPrompt += `\n\nEl ejercicio actual sobre el que te consultan es:\nTítulo: "${ejercicio.titulo}"\nEnunciado: "${ejercicio.enunciado}"`;
 
     // Las imágenes ya no se manejan aquí, el circuito se pondrá directamente en el enunciado si es necesario.
 
@@ -122,7 +118,7 @@ router.post("/chat/message", async (req, res) => {
     }
  console.log("System Prompt BASE cargado/usado:", systemPrompt.substring(0, 150) + '...'); // Muestra solo los primeros 150 caracteres para no llenar la consola
     // Añadimos la información específica del ejercicio al prompt del sistema
-    systemPrompt += `\n\nEl ejercicio actual sobre el que te consultan es:\nTítulo: "${ejercicio ? ejercicio.titulo : 'No disponible'}"\nEnunciado: "${ejercicio ? ejercicio.enunciado : 'No disponible'}"`;
+   // systemPrompt += `\n\nEl ejercicio actual sobre el que te consultan es:\nTítulo: "${ejercicio ? ejercicio.titulo : 'No disponible'}"\nEnunciado: "${ejercicio ? ejercicio.enunciado : 'No disponible'}"`;
 
     // Las imágenes ya no se manejan aquí.
 

@@ -35,7 +35,4 @@ const ejercicioSchema = mongoose.Schema({
     }
 });
 
-// --- CORRECCIÓN CLAVE AQUÍ ---
-// Añadimos el tercer parámetro ('ejercicios') para decirle a Mongoose el nombre exacto de la colección.
-// Si en MongoDB Compass tu colección se llama diferente, cámbialo aquí.
 module.exports = mongoose.model('Ejercicio', ejercicioSchema, 'ejercicios');
