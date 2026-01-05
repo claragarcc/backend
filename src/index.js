@@ -19,7 +19,10 @@ const progresoRoutes = require("./routes/progresoRoutes");
 const { router: authRouter, requireAuth } = require("./authRoutes");
 
 const app = express();
-const port = process.env.PORT || 9000;
+const port = process.env.PORT || 80;
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Servidor escuchando en el puerto ${port}`);
+})
 
 // ====== CORS (imprescindible para cookies de sesión en el front) ======
 app.use(
@@ -83,6 +86,6 @@ app.post("/api/llm/query", requireAuth, (req, res) => {
   res.json({ ok: true, user: req.session.user });
 });
 
-app.listen(port, () => {
-  console.log(`Servidor escuchando en http://localhost:${port}`);
-});
+// app.listen(port, () => {
+//   console.log(`Servidor escuchando en http://localhost:${port}`);
+// });
