@@ -6,6 +6,7 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const session = require("express-session");
 const MongoStore = require("connect-mongo");
+const path = require("path");
 
 // Rutas de tu app
 const userRoutes = require("./routes/usuarios");
@@ -20,9 +21,6 @@ const { router: authRouter, requireAuth } = require("./authRoutes");
 
 const app = express();
 const port = process.env.PORT || 80;
-app.listen(port, "0.0.0.0", () => {
-  console.log(`Servidor escuchando en el puerto ${port}`);
-})
 
 // ====== CORS (imprescindible para cookies de sesión en el front) ======
 app.use(
@@ -51,25 +49,18 @@ app.use(
     store: MongoStore.create({ mongoUrl: process.env.MONGODB_URI }),
     cookie: {
       httpOnly: true,
-      secure: false,       // En producción con HTTPS: true
-      sameSite: "lax",     // Si front y back están en dominios distintos con HTTPS, usa "none"
+      secure: false,
+      sameSite: "lax",
     },
   })
 );
 
-// ====== Rutas públicas básicas ======
-app.get("/", (_req, res) => {
-  res.send("Bienvenido a la API del Tutor Virtual");
+// ====== Healthcheck (en vez de usar "/") ======
+app.get("/api/health", (_req, res) => {
+  res.json({ ok: true });
 });
 
-// ====== Rutas de AUTENTICACIÓN (CAS real + modo demo)
-// Todas las rutas definidas en authRoutes.js:
-//   GET  /api/auth/cas/login
-//   GET  /api/auth/cas/callback
-//   GET  /api/auth/me
-//   GET  /api/auth/logout
-//   POST /api/auth/dev-login   (si DEV_BYPASS_AUTH=true)
-//   POST /api/auth/dev-logout  (si DEV_BYPASS_AUTH=true)
+// ====== Rutas de AUTENTICACIÓN (CAS real + modo demo) ======
 app.use(authRouter);
 
 // ====== Rutas de la API (negocio) ======
@@ -82,10 +73,20 @@ app.use("/api/resultados", resultadoRoutes);
 
 // ====== Ejemplo de ruta PROTEGIDA (necesita sesión válida) ======
 app.post("/api/llm/query", requireAuth, (req, res) => {
-  // Si llega aquí, req.session.user existe
   res.json({ ok: true, user: req.session.user });
 });
 
-// app.listen(port, () => {
-//   console.log(`Servidor escuchando en http://localhost:${port}`);
-// });
+// ====== Servir FRONTEND (React build) ======
+const frontendDist = path.join(__dirname, "..", "frontend", "dist");
+
+app.use(express.static(frontendDist));
+
+app.get(/^\/(?!api\/).*/, (req, res) => {
+  res.sendFile(path.join(frontendDist, "index.html"));
+});
+
+
+// ====== Arranque servidor ======
+app.listen(port, "0.0.0.0", () => {
+  console.log(`Servidor escuchando en el puerto ${port}`);
+});
