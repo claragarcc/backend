@@ -26,11 +26,17 @@ router.post("/finalizar", async (req, res) => {
             ---
             ${conversacionTexto}
             ---
-            Basado en esta conversación, genera un objeto JSON con dos claves:
-            - "analisis": Un resumen muy corto de lo que hizo el estudiante.
-            - "consejo": Un consejo muy breve y directo.
-            Responde únicamente con el objeto JSON.
-        `;
+         Devuelve ÚNICAMENTE un objeto JSON con estas claves:
+- "analisis": resumen muy corto de lo que hizo el estudiante (1-2 frases).
+- "consejo": consejo muy breve y directo (1 frase).
+- "errores": array con 0 a 3 errores frecuentes detectados en la conversación.
+
+Cada error debe tener:
+  - "etiqueta": un código corto tipo "CA_OHM_01"
+  - "texto": descripción breve (máx 12 palabras)
+
+Si no detectas errores claros, devuelve "errores": [].
+`;
 
         const ollamaResponse = await axios.post(`${process.env.OLLAMA_API_URL}/api/chat`, {
             model: process.env.OLLAMA_MODEL,
@@ -38,15 +44,29 @@ router.post("/finalizar", async (req, res) => {
             format: "json",
             stream: false
         });
-        const analisisIA = JSON.parse(ollamaResponse.data.message.content);
+
+     let analisisIA;
+
+try {
+  analisisIA = JSON.parse(ollamaResponse.data.message.content);
+} catch (error) {
+  console.error("Error parseando JSON de Ollama:", error);
+  analisisIA = {
+    analisis: "",
+    consejo: "",
+    errores: []
+  };
+}
+
 
         const nuevoResultado = new Resultado({
             usuario_id: userId,
-            ejercicio_id: exerciseId,
-            interaccion_id: interaccionId,
-            resueltoALaPrimera: resueltoALaPrimera,
-            analisisIA: analisisIA.analisis,
-            consejoIA: analisisIA.consejo
+  ejercicio_id: exerciseId,
+  interaccion_id: interaccionId,
+  resueltoALaPrimera,
+  analisisIA: analisisIA.analisis,
+  consejoIA: analisisIA.consejo,
+  errores: Array.isArray(analisisIA.errores) ? analisisIA.errores : []
         });
         await nuevoResultado.save();
 

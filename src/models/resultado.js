@@ -16,7 +16,7 @@ const resultadoSchema = new mongoose.Schema({
         ref: 'Interaccion',
         required: true
     },
-    // --- NUEVO CAMPO AÑADIDO ---
+
     // Guardará 'true' si el usuario resolvió el ejercicio en el primer intento.
     resueltoALaPrimera: {
         type: Boolean,
@@ -25,7 +25,15 @@ const resultadoSchema = new mongoose.Schema({
     // --------------------------
     analisisIA: { type: String, required: false },
     consejoIA: { type: String, required: false },
-    fecha: { type: Date, default: Date.now }
+    fecha: { type: Date, default: Date.now },
+    // --------------------
+    errores: [
+    {
+      etiqueta: { type: String, required: true },
+      texto: { type: String, required: true }
+    }
+  ],
+
 });
 
 // Recuerda tener el nombre de la colección ('resultados') como tercer parámetro.
