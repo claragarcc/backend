@@ -8,7 +8,7 @@ const {
   CAS_BASE_URL = "https://casdev.upv.es/cas",
   OAUTH_CLIENT_ID,
   OAUTH_CLIENT_SECRET,
-  OAUTH_REDIRECT_URI = "http://localhost:9000/api/auth/cas/callback",
+  OAUTH_REDIRECT_URI = "http://localhost:80/api/auth/cas/callback",
   OAUTH_SCOPES = "profile email",
   FRONTEND_BASE_URL = "http://localhost:5173",
 } = process.env;

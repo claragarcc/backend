@@ -1,4 +1,4 @@
-// backend/authRoutes.js (o como lo llames)
+// backend/authRoutes.js
 const { Router } = require("express");
 const crypto = require("crypto");
 const fetch = require("node-fetch");
@@ -12,13 +12,13 @@ const {
   CAS_BASE_URL = "https://casdev.upv.es/cas",
   OAUTH_CLIENT_ID,
   OAUTH_CLIENT_SECRET,
-  OAUTH_REDIRECT_URI = "http://localhost:9000/api/auth/cas/callback",
+  OAUTH_REDIRECT_URI, // lo cogemos del .env
   OAUTH_SCOPES = "profile email",
-  FRONTEND_BASE_URL = "http://localhost:5173",
+  FRONTEND_BASE_URL, // lo cogemos del .env
   DEV_BYPASS_AUTH,
 } = process.env;
 
-// 🔹 Creamos aquí el cliente OAuth2 para CAS (ya no hace falta ./oauthClient)
+// Cliente OAuth2 apuntando a CAS
 const oauthClient = new AuthorizationCode({
   client: {
     id: OAUTH_CLIENT_ID,
@@ -32,21 +32,19 @@ const oauthClient = new AuthorizationCode({
   http: { json: true },
 });
 
-
 /* ===================================================================
- * 1. LOGIN CAS (ruta que llama el frontend)
+ * 1. LOGIN CAS
  *    GET /api/auth/cas/login
  * =================================================================== */
 router.get("/api/auth/cas/login", async (req, res) => {
   try {
     const state = crypto.randomBytes(16).toString("hex");
 
-    // Ruta de retorno: o lo que pide el front, o el Home por defecto
-    const returnTo = req.query.returnTo || `${FRONTEND_BASE_URL}/`;
+    // Ruta de retorno: o lo que pide el front, o Home por defecto
+    const returnTo = req.query.returnTo || `${FRONTEND_BASE_URL || "/"}`;
     req.session.oauthState = state;
     req.session.returnTo = returnTo;
 
-    // Construir URL de autorización CAS vía simple-oauth2
     const authorizationUri = oauthClient.authorizeURL({
       redirect_uri: OAUTH_REDIRECT_URI,
       scope: OAUTH_SCOPES,
@@ -68,13 +66,13 @@ router.get("/api/auth/cas/callback", async (req, res) => {
   try {
     const { code, state } = req.query;
 
-    // 1. Validación de seguridad
+    // Validación de seguridad
     if (!code || state !== req.session.oauthState) {
       console.error("[CAS ERROR] State no coincide o code no recibido.");
       return res.status(400).send("Solicitud inválida (state/code).");
     }
 
-    // 2. Intercambio code -> access_token
+    // code -> access_token
     const tokenParams = {
       code,
       redirect_uri: OAUTH_REDIRECT_URI,
@@ -84,7 +82,7 @@ router.get("/api/auth/cas/callback", async (req, res) => {
     const accessToken = await oauthClient.getToken(tokenParams);
     const rawToken = accessToken.token.access_token;
 
-    // 3. Pedir perfil del usuario a CAS
+    // Perfil
     const profileResp = await fetch(`${CAS_BASE_URL}/oauth2.0/profile`, {
       headers: { Authorization: `Bearer ${rawToken}` },
     });
@@ -97,7 +95,7 @@ router.get("/api/auth/cas/callback", async (req, res) => {
 
     const profile = await profileResp.json();
 
-    // 4. Normalizar atributos
+    // Normalizar atributos
     const attrs = profile.attributes || profile || {};
     const upvLogin = attrs.login || attrs.uid || profile.id;
     const email = attrs.email;
@@ -112,7 +110,7 @@ router.get("/api/auth/cas/callback", async (req, res) => {
         .send("CAS no devolvió identificador de usuario (upvLogin).");
     }
 
-    // 5. Upsert en Mongo
+    // Upsert en Mongo
     const usuario = await Usuario.findOneAndUpdate(
       { upvLogin },
       {
@@ -125,7 +123,7 @@ router.get("/api/auth/cas/callback", async (req, res) => {
     usuario.lastLoginAt = new Date();
     await usuario.save();
 
-    // 6. Guardar usuario en la sesión
+    // Guardar usuario en sesión
     req.session.user = {
       id: usuario._id.toString(),
       upvLogin: usuario.upvLogin,
@@ -133,12 +131,11 @@ router.get("/api/auth/cas/callback", async (req, res) => {
       apellidos: usuario.apellidos,
       email: usuario.email,
       rol: usuario.rol || "alumno",
+      mode: "cas",
     };
 
-    // 7. Redirigir al front:
-    //    - Si había returnTo, ahí.
-    //    - Si no, al Home "/".
-    const goto = req.session.returnTo || `${FRONTEND_BASE_URL}/`;
+    // Redirigir al front
+    const goto = req.session.returnTo || `${FRONTEND_BASE_URL || "/"}`;
     delete req.session.oauthState;
     delete req.session.returnTo;
 
@@ -152,11 +149,6 @@ router.get("/api/auth/cas/callback", async (req, res) => {
 /* ===================================================================
  * 3. ENDPOINTS DE SESIÓN
  * =================================================================== */
-
-/**
- * GET /api/auth/me
- * Usado por el frontend para saber si hay sesión activa.
- */
 router.get("/api/auth/me", (req, res) => {
   if (!req.session?.user) {
     return res.status(401).json({ authenticated: false });
@@ -164,14 +156,10 @@ router.get("/api/auth/me", (req, res) => {
   return res.json({ authenticated: true, user: req.session.user });
 });
 
-/**
- * GET /api/auth/logout
- * Cierra sesión local y en CAS.
- */
 router.get("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
     const url = new URL(`${CAS_BASE_URL}/logout`);
-    url.searchParams.set("service", FRONTEND_BASE_URL);
+    if (FRONTEND_BASE_URL) url.searchParams.set("service", FRONTEND_BASE_URL);
     res.redirect(url.toString());
   });
 });
@@ -188,26 +176,59 @@ function requireAuth(req, res, next) {
 
 /* ===================================================================
  * 5. MODO DEMO (sin CAS) → POST /api/auth/dev-login
- *    Solo si DEV_BYPASS_AUTH=true en el .env
+ *    - Cada navegador obtiene un usuario demo distinto (persistido en Mongo)
  * =================================================================== */
-router.post("/api/auth/dev-login", (req, res) => {
-  if (DEV_BYPASS_AUTH !== "true") {
-    return res
-      .status(403)
-      .json({ error: "DEV_BYPASS_AUTH deshabilitado en el servidor" });
+router.post("/api/auth/dev-login", async (req, res) => {
+  try {
+    if (DEV_BYPASS_AUTH !== "true") {
+      return res
+        .status(403)
+        .json({ error: "DEV_BYPASS_AUTH deshabilitado en el servidor" });
+    }
+
+    // Si ya hay sesión, no creamos otra
+    if (req.session?.user?.id) {
+      return res.json({ ok: true, user: req.session.user });
+    }
+
+    // demoKey viene del front (localStorage). Si no viene, generamos uno.
+    const incoming = (req.body?.demoKey || "").toString().trim();
+    const demoKey =
+      incoming.length > 0 ? incoming.slice(0, 32) : crypto.randomBytes(16).toString("hex");
+
+    const upvLogin = `demo_${demoKey}`;
+
+    // Creamos/actualizamos un usuario demo en Mongo -> _id real (distinto por navegador)
+    const usuario = await Usuario.findOneAndUpdate(
+      { upvLogin },
+      {
+        $set: {
+          nombre: "Usuario",
+          apellidos: "Demo",
+          email: `${upvLogin}@demo.local`,
+        },
+      },
+      { new: true, upsert: true }
+    );
+
+    usuario.lastLoginAt = new Date();
+    await usuario.save();
+
+    req.session.user = {
+      id: usuario._id.toString(),
+      upvLogin: usuario.upvLogin,
+      nombre: usuario.nombre,
+      apellidos: usuario.apellidos,
+      email: usuario.email,
+      rol: usuario.rol || "alumno",
+      mode: "demo",
+    };
+
+    return res.json({ ok: true, user: req.session.user });
+  } catch (err) {
+    console.error("[DEV LOGIN ERROR]", err);
+    return res.status(500).json({ error: "Error creando sesión demo" });
   }
-
-  const fakeUser = {
-    id: "000000000000000000000000",
-    upvLogin: "devuser",
-    nombre: "Usuario",
-    apellidos: "Demo",
-    email: "devuser@upv.es",
-    rol: "alumno",
-  };
-
-  req.session.user = fakeUser;
-  return res.json({ ok: true, user: fakeUser });
 });
 
 router.post("/api/auth/dev-logout", (req, res) => {

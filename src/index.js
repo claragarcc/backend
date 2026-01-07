@@ -77,7 +77,7 @@ app.post("/api/llm/query", requireAuth, (req, res) => {
 });
 
 // ====== Servir FRONTEND (React build) ======
-const frontendDist = path.join(__dirname, "..", "frontend", "dist");
+const frontendDist = path.join(__dirname, "..","..", "frontend", "dist");
 
 app.use(express.static(frontendDist));
 
