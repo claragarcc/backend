@@ -12,9 +12,9 @@ const {
   CAS_BASE_URL = "https://casdev.upv.es/cas",
   OAUTH_CLIENT_ID,
   OAUTH_CLIENT_SECRET,
-  OAUTH_REDIRECT_URI, // lo cogemos del .env
+  OAUTH_REDIRECT_URI,
   OAUTH_SCOPES = "profile email",
-  FRONTEND_BASE_URL, // lo cogemos del .env
+  FRONTEND_BASE_URL,
   DEV_BYPASS_AUTH,
 } = process.env;
 
@@ -176,7 +176,7 @@ function requireAuth(req, res, next) {
 
 /* ===================================================================
  * 5. MODO DEMO (sin CAS) → POST /api/auth/dev-login
- *    - Cada navegador obtiene un usuario demo distinto (persistido en Mongo)
+ *    - ✅ 1 usuario demo NUEVO por sesión (sin clave)
  * =================================================================== */
 router.post("/api/auth/dev-login", async (req, res) => {
   try {
@@ -186,30 +186,21 @@ router.post("/api/auth/dev-login", async (req, res) => {
         .json({ error: "DEV_BYPASS_AUTH deshabilitado en el servidor" });
     }
 
-    // Si ya hay sesión, no creamos otra
+    // ✅ Si ya hay sesión, devolvemos la misma (misma persona en esa sesión)
     if (req.session?.user?.id) {
       return res.json({ ok: true, user: req.session.user });
     }
 
-    // demoKey viene del front (localStorage). Si no viene, generamos uno.
-    const incoming = (req.body?.demoKey || "").toString().trim();
-    const demoKey =
-      incoming.length > 0 ? incoming.slice(0, 32) : crypto.randomBytes(16).toString("hex");
-
+    // ✅ Genera SIEMPRE un usuario demo nuevo (sin body)
+    const demoKey = crypto.randomBytes(16).toString("hex");
     const upvLogin = `demo_${demoKey}`;
 
-    // Creamos/actualizamos un usuario demo en Mongo -> _id real (distinto por navegador)
-    const usuario = await Usuario.findOneAndUpdate(
-      { upvLogin },
-      {
-        $set: {
-          nombre: "Usuario",
-          apellidos: "Demo",
-          email: `${upvLogin}@demo.local`,
-        },
-      },
-      { new: true, upsert: true }
-    );
+    const usuario = await Usuario.create({
+      upvLogin,
+      nombre: "Usuario",
+      apellidos: "Demo",
+      email: `${upvLogin}@demo.local`,
+    });
 
     usuario.lastLoginAt = new Date();
     await usuario.save();

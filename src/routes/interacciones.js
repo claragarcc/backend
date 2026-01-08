@@ -2,6 +2,8 @@
 const express = require("express");
 const Interaccion = require("../models/interaccion");
 const mongoose = require("mongoose");
+const { requireAuth } = require("../authRoutes");
+
 
 const router = express.Router();
 
@@ -61,37 +63,54 @@ router.get("/byExerciseAndUser/:exerciseId/:userId", async (req, res) => {
 });
 
 // 3. Ruta para obtener una interacción específica por su ID
-router.get("/:id", async (req, res) => {
+router.get("/:id", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "ID de interacción inválido." });
     }
+
     const interaccion = await Interaccion.findById(id);
     if (!interaccion) {
       return res.status(404).json({ message: "Interacción no encontrada." });
     }
+
+    // ✅ Solo dueño
+    if (String(interaccion.usuario_id) !== String(req.session.user.id)) {
+      return res.status(403).json({ message: "No autorizado." });
+    }
+
     res.status(200).json(interaccion);
   } catch (error) {
     res.status(500).json({ message: "Error interno del servidor." });
   }
 });
 
+
 // 4. Ruta para eliminar una interacción
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", requireAuth, async (req, res) => {
   try {
     const { id } = req.params;
     if (!mongoose.Types.ObjectId.isValid(id)) {
       return res.status(400).json({ message: "ID de interacción inválido." });
     }
-    const data = await Interaccion.findByIdAndDelete(id);
-    if (!data) {
+
+    const interaccion = await Interaccion.findById(id);
+    if (!interaccion) {
       return res.status(404).json({ message: "Interacción no encontrada para eliminar" });
     }
+
+    // ✅ Solo dueño
+    if (String(interaccion.usuario_id) !== String(req.session.user.id)) {
+      return res.status(403).json({ message: "No autorizado." });
+    }
+
+    await Interaccion.findByIdAndDelete(id);
     res.status(200).json({ message: "Interacción eliminada exitosamente" });
   } catch (error) {
     res.status(500).json({ message: "Error interno del servidor." });
   }
 });
+
 
 module.exports = router;

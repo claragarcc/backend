@@ -8,6 +8,8 @@ const session = require("express-session");
 const MongoStore = require("connect-mongo");
 const path = require("path");
 
+
+
 // Rutas de tu app
 const userRoutes = require("./routes/usuarios");
 const ejerciciosRoutes = require("./routes/ejercicios");
@@ -32,7 +34,7 @@ app.use(
 
 // ====== Middlewares base ======
 app.use(express.json());
-app.use("/static", express.static("static"));
+app.use("/static", express.static(path.join(__dirname, "static"), { fallthrough: false }));
 
 // ====== Conexión a Mongo ======
 mongoose
@@ -41,6 +43,10 @@ mongoose
   .catch((error) => console.error("Error al conectar a MongoDB:", error));
 
 // ====== Sesión (persistida en Mongo) ======
+
+
+app.set("trust proxy", 1); // trust first proxy
+const isProd = process.env.NODE_ENV === "production";
 app.use(
   session({
     secret: process.env.SESSION_SECRET || "cambia-esto-por-una-clave-segura",
@@ -85,6 +91,14 @@ app.get(/^\/(?!api\/).*/, (req, res) => {
   res.sendFile(path.join(frontendDist, "index.html"));
 });
 
+const fs = require("fs");
+
+const staticDir = path.join(__dirname, "static");
+console.log("STATIC DIR =", staticDir);
+console.log("STATIC EXISTS =", fs.existsSync(staticDir));
+if (fs.existsSync(staticDir)) {
+  console.log("STATIC FILES =", fs.readdirSync(staticDir).slice(0, 50));
+}
 
 // ====== Arranque servidor ======
 app.listen(port, "0.0.0.0", () => {
