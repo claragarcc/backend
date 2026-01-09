@@ -4,7 +4,7 @@ const path = require("path");
 require("dotenv").config(); // Load environment variables from .env file
 
 // --- CONFIGURATION ---
-const BACKEND_URL = process.env.VITE_BACKEND_URL || "http://localhost:9000"; // Ensure this matches your backend URL
+const BACKEND_URL = process.env.VITE_BACKEND_URL || "http://localhost:80"; // Ensure this matches your backend URL
 const MOCK_USER_ID = "681cd8217918fbc4fc7a626f"; // Use the same MOCK_USER_ID as in Interacciones.jsx
 
 // IMPORTANT: Replace this with the actual ID(s) of your exercise(s)

@@ -83,13 +83,30 @@ app.post("/api/llm/query", requireAuth, (req, res) => {
 });
 
 // ====== Servir FRONTEND (React build) ======
-const frontendDist = path.join(__dirname, "..","..", "frontend", "dist");
+const frontendDist = path.join(__dirname, "..", "..", "frontend", "dist");
+console.log("FRONTEND DIST =", frontendDist);
 
-app.use(express.static(frontendDist));
 
+// 1) Assets (JS/CSS) con caché largo (llevan hash)
+// 2) index.html SIN caché (para que coja SIEMPRE el build nuevo)
+app.use(
+  express.static(frontendDist, {
+    immutable: true,
+    maxAge: "365d",
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith("index.html")) {
+        res.setHeader("Cache-Control", "no-store");
+      }
+    },
+  })
+);
+
+// SPA fallback (cualquier ruta que NO sea /api -> index.html SIN caché)
 app.get(/^\/(?!api\/).*/, (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
   res.sendFile(path.join(frontendDist, "index.html"));
 });
+
 
 const fs = require("fs");
 
