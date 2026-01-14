@@ -16,6 +16,10 @@ const resultadoSchema = new mongoose.Schema({
         ref: 'Interaccion',
         required: true
     },
+    numMensajes: {
+        type: Number,
+        default: 0
+    },
 
     // Guardará 'true' si el usuario resolvió el ejercicio en el primer intento.
     resueltoALaPrimera: {
@@ -23,8 +27,8 @@ const resultadoSchema = new mongoose.Schema({
         default: false
     },
     // --------------------------
-    analisisIA: { type: String, required: false },
-    consejoIA: { type: String, required: false },
+    analisisIA: { type: String, default: null },
+    consejoIA: { type: String, default: null },
     fecha: { type: Date, default: Date.now },
     // --------------------
     errores: [
