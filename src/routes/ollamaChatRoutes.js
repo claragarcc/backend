@@ -8,7 +8,7 @@ require('dotenv').config();
 const router = express.Router();
 
 const OLLAMA_API_URL = process.env.OLLAMA_API_URL || "http://localhost:11434";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "llama3.2";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "gemma2:27b";
 
 // Iniciar nueva conversación
 router.post("/chat/start-exercise", async (req, res) => {
