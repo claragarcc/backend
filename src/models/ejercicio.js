@@ -11,7 +11,7 @@ const ejercicioSchema = mongoose.Schema({
     },
     imagen: {
         type: String,
-        required: false // Es mejor que no sea obligatorio
+        required: false 
     }, 
     asignatura: {
         type: String,
@@ -25,10 +25,15 @@ const ejercicioSchema = mongoose.Schema({
         type: Number,
         required: true
     },
-    contextoTutor: {
-        type: String,
-        required: false
-    },
+   tutorContext: {
+        objetivo: String,
+        contextoCompleto: String,   
+        netlist: String,           
+        modoExperto: String,
+        ac_refs: [String],         
+        version: Number
+},
+
     CA: {
         type: String,
         required: true
