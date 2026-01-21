@@ -1,240 +1,542 @@
-// backend/src/routes/ollamaChatRoutes.js
+// routes/ollamaChatRoutes
 const express = require("express");
 const axios = require("axios");
+const mongoose = require("mongoose");
+const fs = require("fs");
+const path = require("path");
+const https = require("https");
+
 const Interaccion = require("../models/interaccion");
 const Ejercicio = require("../models/ejercicio");
-const mongoose = require("mongoose");
 const { buildTutorSystemPrompt } = require("../utils/promptBuilder");
 
+// ⚠️ Recomendación: dotenv se carga UNA vez en index.js.
+// Lo dejo para no romperte nada, pero si ya lo cargas en index.js, puedes quitar esta línea.
 require("dotenv").config();
 
 const router = express.Router();
 
-const OLLAMA_API_URL = process.env.OLLAMA_API_URL || "http://127.0.0.1:11434";
+// =====================
+// Config (base)
+// =====================
+
+// Compatibilidad: si tienes OLLAMA_BASE_URL en algún sitio, también lo aceptamos.
+const OLLAMA_API_URL_FALLBACK =
+  process.env.OLLAMA_API_URL ||
+  process.env.OLLAMA_BASE_URL ||
+  "http://127.0.0.1:11434";
+
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "qwen2.5:latest";
+const OLLAMA_KEEP_ALIVE = process.env.OLLAMA_KEEP_ALIVE || "60m";
 
+// Stream: NO uses axios timeout (timeout=0), usamos un maxTimer propio.
+const OLLAMA_STREAM_MAX_MS = Number(process.env.OLLAMA_STREAM_MAX_MS || 1800000); // 30 min
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 180000); // 3 min (NO-stream)
 
-// Ajustes por defecto (puedes retocar luego)
-const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_TIMEOUT_MS || 120000);
-const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT || 180);
-const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX || 1024);
+const OLLAMA_NUM_PREDICT = Number(process.env.OLLAMA_NUM_PREDICT || 120);
+const OLLAMA_NUM_CTX = Number(process.env.OLLAMA_NUM_CTX || 8192);
 const OLLAMA_TEMPERATURE = Number(process.env.OLLAMA_TEMPERATURE || 0.4);
 
-console.log("[OLLAMA CFG] URL =", OLLAMA_API_URL);
-console.log("[OLLAMA CFG] MODEL =", OLLAMA_MODEL);
-console.log("[OLLAMA CFG] timeout(ms) =", OLLAMA_TIMEOUT_MS, "ctx =", OLLAMA_NUM_CTX, "predict =", OLLAMA_NUM_PREDICT);
+const HISTORY_MAX_MESSAGES = Number(process.env.HISTORY_MAX_MESSAGES || 8);
 
-/**
- * Helper: llama a Ollama con options + timeout
- */
-async function callOllamaChat(messages) {
-  return axios.post(
-    `${OLLAMA_API_URL}/api/chat`,
-    {
-      model: OLLAMA_MODEL,
-      messages,
-      stream: false,
-      keep_alive: "10m",
-      options: {
-        num_predict: OLLAMA_NUM_PREDICT,
-        num_ctx: OLLAMA_NUM_CTX,
-        temperature: OLLAMA_TEMPERATURE,
-      },
-    },
-    { timeout: OLLAMA_TIMEOUT_MS }
+const DEFAULT_START_MESSAGE =
+  process.env.DEFAULT_START_MESSAGE ||
+  "Quiero empezar el ejercicio. Guíame paso a paso con preguntas socráticas y explícame qué debo analizar primero.";
+
+// Debug
+const DEBUG_OLLAMA = process.env.DEBUG_OLLAMA === "1";
+const DEBUG_DUMP_CONTEXT = process.env.DEBUG_DUMP_CONTEXT === "1";
+const DEBUG_DUMP_PATH = process.env.DEBUG_DUMP_PATH || "./debug_ollama";
+
+// TLS (solo si hiciera falta en DEV)
+const ALLOW_INSECURE_TLS = process.env.OLLAMA_INSECURE_TLS === "1";
+
+// =====================
+// Helpers
+// =====================
+function nowMs() {
+  return Number(process.hrtime.bigint() / 1000000n);
+}
+function mkReqId() {
+  return Math.random().toString(16).slice(2) + "-" + Date.now().toString(16);
+}
+function dlog(reqId, ...args) {
+  if (DEBUG_OLLAMA) console.log(`[OLLAMA][${reqId}]`, ...args);
+}
+function dumpToFile(reqId, label, content) {
+  if (!DEBUG_DUMP_CONTEXT) return;
+  if (!fs.existsSync(DEBUG_DUMP_PATH)) fs.mkdirSync(DEBUG_DUMP_PATH, { recursive: true });
+  const filename = path.join(
+    DEBUG_DUMP_PATH,
+    `${new Date().toISOString().replace(/[:.]/g, "-")}_${reqId}_${label}.txt`
   );
+  fs.writeFileSync(filename, content, "utf8");
 }
 
-// =====================================================
-// POST /api/ollama/chat/start-exercise
-// Iniciar nueva conversación
-// =====================================================
-router.post("/chat/start-exercise", async (req, res) => {
+function isValidObjectId(x) {
+  return typeof x === "string" && mongoose.Types.ObjectId.isValid(x);
+}
+
+function normalizeBaseUrl(url) {
+  if (!url || typeof url !== "string") return "";
+  return url.replace(/\/$/, ""); // quita "/" final
+}
+
+// Decide a qué servidor llamar:
+// 1) override por header (x-llm-mode)
+// 2) LLM_MODE en .env
+// 3) fallback OLLAMA_API_URL
+function getOllamaBaseUrl(req) {
+  const headerMode = String(req.headers["x-llm-mode"] || "").toLowerCase().trim(); // "local" | "upv"
+  const envMode = String(process.env.LLM_MODE || "").toLowerCase().trim();
+  const mode = headerMode || envMode;
+
+  const upvUrl =
+    process.env.OLLAMA_API_URL_UPV ||
+    process.env.OLLAMA_BASE_URL_UPV ||
+    "";
+
+  const localUrl =
+    process.env.OLLAMA_API_URL_LOCAL ||
+    process.env.OLLAMA_BASE_URL_LOCAL ||
+    "";
+
+  let chosen = OLLAMA_API_URL_FALLBACK;
+
+  if (mode === "upv" && upvUrl) chosen = upvUrl;
+  if (mode === "local" && localUrl) chosen = localUrl;
+
+  return { mode: mode || "default", baseUrl: normalizeBaseUrl(chosen) };
+}
+
+function buildSystemPrompt(ejercicio) {
+  let systemPrompt = buildTutorSystemPrompt(ejercicio);
+
+  if (typeof systemPrompt !== "string" || systemPrompt.trim() === "") {
+    systemPrompt =
+      "Eres un tutor socrático. Responde en español. No des la solución: guía con preguntas concretas.";
+  }
+  return systemPrompt;
+}
+
+function sseSend(res, payload) {
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
+  if (typeof res.flush === "function") res.flush();
+}
+
+function axiosConfigForBaseUrl(baseUrl) {
+  // Para HTTPS, podemos setear un agent (y opcionalmente permitir TLS inseguro en DEV).
+  if (baseUrl.startsWith("https://")) {
+    return {
+      httpsAgent: new https.Agent({ rejectUnauthorized: !ALLOW_INSECURE_TLS }),
+    };
+  }
+  return {};
+}
+
+// ==============================
+// Logs de arranque (solo informativos)
+// ==============================
+console.log("[OLLAMA CFG] MODEL =", OLLAMA_MODEL);
+console.log("[OLLAMA CFG] KEEP_ALIVE =", OLLAMA_KEEP_ALIVE);
+console.log(
+  "[OLLAMA CFG] timeout(ms) =",
+  OLLAMA_TIMEOUT_MS,
+  "streamMax(ms) =",
+  OLLAMA_STREAM_MAX_MS,
+  "ctx =",
+  OLLAMA_NUM_CTX,
+  "predict =",
+  OLLAMA_NUM_PREDICT,
+  "history =",
+  HISTORY_MAX_MESSAGES
+);
+console.log("[OLLAMA CFG] fallback URL =", normalizeBaseUrl(OLLAMA_API_URL_FALLBACK));
+console.log("[OLLAMA CFG] local URL =", normalizeBaseUrl(process.env.OLLAMA_API_URL_LOCAL || process.env.OLLAMA_BASE_URL_LOCAL || ""));
+console.log("[OLLAMA CFG] upv URL   =", normalizeBaseUrl(process.env.OLLAMA_API_URL_UPV || process.env.OLLAMA_BASE_URL_UPV || ""));
+console.log("[OLLAMA CFG] insecureTLS =", ALLOW_INSECURE_TLS ? "ON (DEV)" : "OFF");
+
+// ==============================
+// Healthcheck Ollama (según modo)
+// ==============================
+router.get("/health", async (req, res) => {
+  const { mode, baseUrl } = getOllamaBaseUrl(req);
+
   try {
-    const { userId, exerciseId, userMessage } = req.body;
-
-    // Validación
-    if (!userId || !exerciseId || !userMessage) {
-      return res.status(400).json({
-        message: "Faltan datos: userId, exerciseId o userMessage.",
-      });
-    }
-
-    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(exerciseId)) {
-      return res.status(400).json({ message: "IDs de usuario o ejercicio inválidos." });
-    }
-
-    // Buscar ejercicio
-    const ejercicio = await Ejercicio.findById(exerciseId);
-    if (!ejercicio) {
-      return res.status(404).json({ message: "Ejercicio no encontrado." });
-    }
-
-    console.time("LLM_total");
-    console.time("LLM_buildPrompt");
-
-    let systemPrompt = buildTutorSystemPrompt(ejercicio);
-
-    console.timeEnd("LLM_buildPrompt");
-    console.log("systemPrompt chars =", systemPrompt?.length || 0);
-
-    // Fallback mínimo (robustez)
-    if (typeof systemPrompt !== "string" || systemPrompt.trim() === "") {
-      console.warn(`System prompt vacío para el ejercicio ${exerciseId}. Usando fallback mínimo.`);
-      systemPrompt = "Eres un tutor socrático. Responde en español. No des la solución: guía con preguntas.";
-    }
-
-    const initialMessages = [
-      { role: "system", content: systemPrompt },
-      { role: "user", content: userMessage },
-    ];
-
-    console.time("LLM_ollamaCall");
-    const ollamaResponse = await callOllamaChat(initialMessages);
-    console.timeEnd("LLM_ollamaCall");
-    console.timeEnd("LLM_total");
-
-    const assistantResponseContent = ollamaResponse?.data?.message?.content ?? "";
-
-    const nuevaInteraccion = new Interaccion({
-      usuario_id: userId,
-      ejercicio_id: exerciseId,
-      inicio: new Date(),
-      fin: new Date(),
-      conversacion: [
-        { role: "user", content: userMessage },
-        { role: "assistant", content: assistantResponseContent },
-      ],
+    const r = await axios.get(`${baseUrl}/api/version`, {
+      timeout: 3000,
+      ...axiosConfigForBaseUrl(baseUrl),
     });
-
-    const savedInteraccion = await nuevaInteraccion.save();
-
-    return res.status(201).json({
-      message: "Interacción iniciada y primer mensaje procesado por Ollama",
-      interaccionId: savedInteraccion._id,
-      initialMessage: assistantResponseContent,
-      fullHistory: savedInteraccion.conversacion,
-    });
-  } catch (error) {
-    console.error("Error al iniciar nueva interacción/chat con Ollama:", error?.message || error);
-
-    // Axios timeout / conexión
-    if (error?.code === "ECONNABORTED") {
-      return res.status(504).json({
-        message: "Timeout esperando respuesta de Ollama.",
-        error: error.message,
-      });
-    }
-
-    if (error.response) {
-      return res.status(error.response.status).json({
-        message: "Error al comunicarse con Ollama.",
-        error: error.response.data,
-      });
-    }
-
-    if (error.request) {
-      return res.status(503).json({
-        message: "No se pudo conectar con el servidor Ollama.",
-        error: error.message,
-      });
-    }
-
-    return res.status(500).json({
-      message: "Error interno del servidor al iniciar interacción.",
-      error: error.message,
+    res.json({ ok: true, mode, url: baseUrl, model: OLLAMA_MODEL, version: r.data });
+  } catch (e) {
+    res.status(503).json({
+      ok: false,
+      mode,
+      url: baseUrl,
+      model: OLLAMA_MODEL,
+      error: e?.message,
+      code: e?.code,
+      status: e?.response?.status || null,
     });
   }
 });
 
-// =====================================================
-// POST /api/ollama/chat/message
-// Continuar conversación
-// =====================================================
-router.post("/chat/message", async (req, res) => {
+// ==============================
+// Util: lee SOLO últimos N mensajes (ligero)
+// ==============================
+async function loadLastMessages(interaccionId) {
+  const doc = await Interaccion.findById(interaccionId)
+    .select({ conversacion: 1 })
+    .slice("conversacion", -HISTORY_MAX_MESSAGES)
+    .lean();
+
+  const history = Array.isArray(doc?.conversacion) ? doc.conversacion : [];
+  return history.map((m) => ({ role: m.role, content: m.content }));
+}
+
+// ==============================
+// STREAM: /api/ollama/chat/stream
+// ==============================
+router.post("/chat/stream", async (req, res) => {
+  const reqId = mkReqId();
+  const t0 = nowMs();
+
+  const { mode, baseUrl } = getOllamaBaseUrl(req);
+
+  // SSE headers
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  // abre SSE
+  res.write(": ok\n\n");
+  if (typeof res.flush === "function") res.flush();
+
+  // heartbeat
+  const hb = setInterval(() => {
+    res.write(": ping\n\n");
+    if (typeof res.flush === "function") res.flush();
+  }, 15000);
+
+  let aborted = false;
+  req.on("close", () => {
+    aborted = true;
+    clearInterval(hb);
+  });
+
+  let finalized = false;
+  const finalizeOnce = async ({ interaccionId, fullAssistant, reason }) => {
+    if (finalized) return;
+    finalized = true;
+
+    clearInterval(hb);
+
+    try {
+      // Guardar asistente solo si hay contenido (evita meter "" si el stream falló pronto)
+      if (typeof fullAssistant === "string" && fullAssistant.trim() !== "") {
+        await Interaccion.updateOne(
+          { _id: interaccionId },
+          {
+            $push: { conversacion: { role: "assistant", content: fullAssistant } },
+            $set: { fin: new Date() },
+          }
+        );
+      } else {
+        await Interaccion.updateOne({ _id: interaccionId }, { $set: { fin: new Date() } });
+      }
+    } catch (e) {
+      console.error("Error guardando interacción tras stream:", e?.message || e);
+    }
+
+    res.write("data: [DONE]\n\n");
+    if (typeof res.flush === "function") res.flush();
+    res.end();
+
+    dlog(reqId, "✅ finalize", {
+      reason,
+      totalMs: nowMs() - t0,
+      assistantLen: (fullAssistant || "").length,
+      mode,
+      baseUrl,
+    });
+  };
+
+  // Controller para abortar stream (timeout propio)
+  const controller = new AbortController();
+  const maxTimer = setTimeout(() => {
+    if (!aborted) {
+      dlog(reqId, "⏱️ abort por OLLAMA_STREAM_MAX_MS");
+      controller.abort();
+    }
+  }, OLLAMA_STREAM_MAX_MS);
+
   try {
-    const { interaccionId, userMessage } = req.body;
+    const { userId, exerciseId, interaccionId, userMessage } = req.body || {};
 
-    if (!interaccionId || !userMessage) {
-      return res.status(400).json({ message: "Faltan datos: interaccionId o userMessage." });
+    dlog(reqId, "➡️ request", {
+      mode,
+      baseUrl,
+      userId,
+      exerciseId,
+      interaccionId: interaccionId || null,
+      msgLen: userMessage?.length || 0,
+    });
+
+    if (!isValidObjectId(userId) || !isValidObjectId(exerciseId)) {
+      sseSend(res, { error: "IDs inválidos (userId/exerciseId)." });
+      clearTimeout(maxTimer);
+      return res.end();
     }
-    if (!mongoose.Types.ObjectId.isValid(interaccionId)) {
-      return res.status(400).json({ message: "ID de interacción inválido." });
+    if (interaccionId && !isValidObjectId(interaccionId)) {
+      sseSend(res, { error: "interaccionId inválido." });
+      clearTimeout(maxTimer);
+      return res.end();
     }
-
-    const interaccion = await Interaccion.findById(interaccionId);
-    if (!interaccion) {
-      return res.status(404).json({ message: "Interacción no encontrada." });
-    }
-
-    const ejercicio = await Ejercicio.findById(interaccion.ejercicio_id);
-
-    console.time("LLM_total");
-    console.time("LLM_buildPrompt");
-
-    let systemPrompt = buildTutorSystemPrompt(ejercicio);
-
-    console.timeEnd("LLM_buildPrompt");
-    console.log("systemPrompt chars =", systemPrompt?.length || 0);
-
-    if (typeof systemPrompt !== "string" || systemPrompt.trim() === "") {
-      console.warn(`System prompt vacío para la interacción ${interaccionId}. Usando fallback mínimo.`);
-      systemPrompt = "Eres un tutor socrático. Responde en español. No des la solución: guía con preguntas.";
+    if (typeof userMessage !== "string" || userMessage.trim() === "") {
+      sseSend(res, { error: "userMessage vacío." });
+      clearTimeout(maxTimer);
+      return res.end();
     }
 
-    // Guardamos mensaje usuario en DB primero
-    interaccion.conversacion.push({ role: "user", content: userMessage });
+    // Ejercicio
+    const tDb0 = nowMs();
+    const ejercicio = await Ejercicio.findById(exerciseId).lean();
+    dlog(reqId, "🗄️ ejercicio", { found: !!ejercicio, ms: nowMs() - tDb0 });
+    if (!ejercicio) {
+      sseSend(res, { error: "Ejercicio no encontrado." });
+      clearTimeout(maxTimer);
+      return res.end();
+    }
 
-    // Mensajes a Ollama: system + historial
-    const messagesForOllama = [
-      { role: "system", content: systemPrompt },
-      ...interaccion.conversacion.map((m) => ({ role: m.role, content: m.content })),
-    ];
+    // Interacción: cargar o crear
+    let iid = interaccionId || null;
 
-    console.time("LLM_ollamaCall");
-    const ollamaResponse = await callOllamaChat(messagesForOllama);
-    console.timeEnd("LLM_ollamaCall");
-    console.timeEnd("LLM_total");
+    if (iid) {
+      const exists = await Interaccion.exists({ _id: iid });
+      if (!exists) iid = null;
+    }
 
-    const assistantResponseContent = ollamaResponse?.data?.message?.content ?? "";
+    if (!iid) {
+      const created = await Interaccion.create({
+        usuario_id: userId,
+        ejercicio_id: exerciseId,
+        inicio: new Date(),
+        fin: new Date(),
+        conversacion: [],
+      });
+      iid = created._id.toString();
+      sseSend(res, { interaccionId: iid });
+      dlog(reqId, "🆕 interaccion creada", iid);
+    }
 
-    interaccion.conversacion.push({ role: "assistant", content: assistantResponseContent });
-    interaccion.fin = new Date();
+    // Guardar mensaje user (atómico)
+    const text = userMessage.trim();
+    await Interaccion.updateOne(
+      { _id: iid },
+      { $push: { conversacion: { role: "user", content: text } }, $set: { fin: new Date() } }
+    );
 
-    const updatedInteraccion = await interaccion.save();
+    // Construir messages: system + últimos N
+    const systemPrompt = buildSystemPrompt(ejercicio);
+    const history = await loadLastMessages(iid);
+    const messages = [{ role: "system", content: systemPrompt }, ...history];
 
-    return res.status(200).json({
-      message: "Mensaje procesado y conversación actualizada por Ollama.",
-      assistantMessage: assistantResponseContent,
-      fullHistory: updatedInteraccion.conversacion,
+    dlog(reqId, "🧱 messages", {
+      total: messages.length,
+      systemLen: systemPrompt.length,
+      lastUserLen: text.length,
+    });
+
+    dumpToFile(reqId, "system_prompt", systemPrompt);
+    dumpToFile(reqId, "messages_json", JSON.stringify(messages, null, 2));
+
+    // Llamada a Ollama stream (NDJSON)
+    const ollamaResp = await axios.post(
+      `${baseUrl}/api/chat`,
+      {
+        model: OLLAMA_MODEL,
+        stream: true,
+        keep_alive: OLLAMA_KEEP_ALIVE,
+        messages,
+        options: {
+          num_predict: OLLAMA_NUM_PREDICT,
+          num_ctx: OLLAMA_NUM_CTX,
+          temperature: OLLAMA_TEMPERATURE,
+        },
+      },
+      {
+        responseType: "stream",
+        timeout: 0,
+        signal: controller.signal,
+        ...axiosConfigForBaseUrl(baseUrl),
+      }
+    );
+
+    let fullAssistant = "";
+    let buffer = "";
+    let firstChunk = true;
+    let doneSeen = false;
+
+    const endStream = async (reason) => {
+      clearTimeout(maxTimer);
+      if (aborted) return;
+      await finalizeOnce({ interaccionId: iid, fullAssistant, reason });
+    };
+
+    ollamaResp.data.on("data", (chunk) => {
+      if (aborted) return;
+
+      if (firstChunk) {
+        firstChunk = false;
+        dlog(reqId, "🟢 primer chunk", { msFromStart: nowMs() - t0 });
+      }
+
+      buffer += chunk.toString("utf-8");
+
+      // Ollama suele mandar NDJSON con \n. A veces viene \r\n.
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+
+        try {
+          const json = JSON.parse(trimmed);
+
+          if (json?.done) {
+            doneSeen = true;
+            // No hacemos return “duro”, dejamos que cierre y finalizeOnce evite dobles.
+            endStream("done");
+            continue;
+          }
+
+          const piece = json?.message?.content;
+          if (typeof piece === "string" && piece.length > 0) {
+            fullAssistant += piece;
+            sseSend(res, { chunk: piece });
+          }
+        } catch {
+          // ignorar líneas incompletas / basura
+        }
+      }
+    });
+
+    ollamaResp.data.on("end", () => {
+      endStream(doneSeen ? "end_after_done" : "end_without_done");
+    });
+
+    ollamaResp.data.on("error", (err) => {
+      clearTimeout(maxTimer);
+      console.error("Stream error Ollama:", err?.message || err);
+      if (!aborted) sseSend(res, { error: "Error en stream de Ollama." });
+      endStream("ollama_stream_error");
     });
   } catch (error) {
-    console.error("Error al procesar mensaje de chat con Ollama:", error?.message || error);
+    clearTimeout(maxTimer);
+    clearInterval(hb);
 
-    if (error?.code === "ECONNABORTED") {
+    dlog(reqId, "❌ error", {
+      message: error?.message,
+      code: error?.code,
+      status: error?.response?.status || null,
+      name: error?.name,
+      mode,
+      baseUrl,
+    });
+
+    if (error?.name === "AbortError") {
+      sseSend(res, { error: "Stream abortado por timeout máximo configurado." });
+      return res.end();
+    }
+
+    sseSend(res, { error: error?.message || "Error interno en stream." });
+    return res.end();
+  }
+});
+
+// =======================================
+// start-exercise (NO stream) — compatibilidad
+// =======================================
+router.post("/chat/start-exercise", async (req, res) => {
+  const { mode, baseUrl } = getOllamaBaseUrl(req);
+
+  try {
+    const { userId, exerciseId, userMessage } = req.body || {};
+
+    if (!isValidObjectId(userId) || !isValidObjectId(exerciseId)) {
+      return res.status(400).json({ message: "IDs de usuario o ejercicio inválidos." });
+    }
+
+    const firstMsg =
+      typeof userMessage === "string" && userMessage.trim() !== ""
+        ? userMessage.trim()
+        : DEFAULT_START_MESSAGE;
+
+    const ejercicio = await Ejercicio.findById(exerciseId).lean();
+    if (!ejercicio) return res.status(404).json({ message: "Ejercicio no encontrado." });
+
+    const systemPrompt = buildSystemPrompt(ejercicio);
+
+    const interaccion = await Interaccion.create({
+      usuario_id: userId,
+      ejercicio_id: exerciseId,
+      inicio: new Date(),
+      fin: new Date(),
+      conversacion: [{ role: "user", content: firstMsg }],
+    });
+
+    const ollamaResp = await axios.post(
+      `${baseUrl}/api/chat`,
+      {
+        model: OLLAMA_MODEL,
+        stream: false,
+        keep_alive: OLLAMA_KEEP_ALIVE,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: firstMsg },
+        ],
+        options: {
+          num_predict: OLLAMA_NUM_PREDICT,
+          num_ctx: OLLAMA_NUM_CTX,
+          temperature: OLLAMA_TEMPERATURE,
+        },
+      },
+      { timeout: OLLAMA_TIMEOUT_MS, ...axiosConfigForBaseUrl(baseUrl) }
+    );
+
+    const assistant = ollamaResp?.data?.message?.content ?? "";
+
+    await Interaccion.updateOne(
+      { _id: interaccion._id },
+      { $push: { conversacion: { role: "assistant", content: assistant } }, $set: { fin: new Date() } }
+    );
+
+    return res.status(201).json({
+      message: "Interacción iniciada",
+      mode,
+      interaccionId: interaccion._id,
+      assistantMessage: assistant,
+      fullHistory: [
+        { role: "user", content: firstMsg },
+        { role: "assistant", content: assistant },
+      ],
+    });
+  } catch (error) {
+    console.error("Error start-exercise:", error?.message || error);
+    if (error.code === "ECONNABORTED") {
       return res.status(504).json({
         message: "Timeout esperando respuesta de Ollama.",
         error: error.message,
+        mode,
       });
     }
-
-    if (error.response) {
-      return res.status(error.response.status).json({
-        message: "Error al comunicarse con Ollama.",
-        error: error.response.data,
-      });
-    }
-
-    if (error.request) {
-      return res.status(503).json({
-        message: "No se pudo conectar con el servidor Ollama.",
-        error: error.message,
-      });
-    }
-
     return res.status(500).json({
-      message: "Error interno del servidor al procesar mensaje.",
-      error: error.message,
+      message: "Error interno del servidor al iniciar interacción.",
+      error: error?.message || "unknown",
+      mode,
     });
   }
 });

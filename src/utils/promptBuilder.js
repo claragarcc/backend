@@ -1,92 +1,96 @@
-// backend/src/utils/promptBuilder.js
-const fs = require("fs");
-const path = require("path");
+function safeStr(x) {
+  if (typeof x !== "string") return "";
+  return x.trim();
+}
 
-// 1) Prompt base (reglas generales del tutor)
-const PROMPT_BASE_PATH = path.join(__dirname, "..", "prompts", "prompt_base.md");
-const PROMPT_BASE = fs.readFileSync(PROMPT_BASE_PATH, "utf-8").trim();
+function joinBlocks(blocks) {
+  return blocks.map(safeStr).filter(Boolean).join("\n\n");
+}
 
-// 2) Catálogo AC (para referenciar por ID)
-const AC_CATALOG_PATH = path.join(__dirname, "..", "data", "alternative_conceptions.json");
-const AC_DATA = JSON.parse(fs.readFileSync(AC_CATALOG_PATH, "utf-8"));
-const AC_CATALOG = AC_DATA?.alternative_conceptions || {};
+function buildTutorContextBlock(ejercicio) {
+  const tc = ejercicio?.tutorContext || {};
 
-/**
- * Ajustes técnicos por modelo (NO docencia).
- * Solo afecta al estilo para mejorar estabilidad.
- */
-function modelStyleAppendix() {
-  const model = (process.env.OLLAMA_MODEL || "").toLowerCase();
+  // Si por lo que sea tienes el contexto largo en otro sitio (CA), lo metemos como fallback.
+  const caFallback = safeStr(ejercicio?.CA);
 
-  if (model.includes("qwen2.5")) {
-    return [
-      "AJUSTES TÉCNICOS (ESTILO) PARA EL MODELO:",
-      "- Sé conciso: respuestas cortas y enfocadas.",
-      "- Haz preguntas concretas y directas (1-3 por turno).",
-      "- Evita divagar o añadir contenido innecesario.",
-      "- Mantén estructura estable: (1) detectar error si aplica (2) preguntar (3) siguiente paso.",
-    ].join("\n");
-  }
+  const objetivo = safeStr(tc.objetivo);
+  const contextoCompleto = safeStr(tc.contextoCompleto);
+  const netlist = safeStr(tc.netlist);
+  const modoExperto = safeStr(tc.modoExperto);
 
-  return "";
+  const acRefs = Array.isArray(tc.ac_refs) ? tc.ac_refs.filter((x) => typeof x === "string" && x.trim()) : [];
+  const version = tc?.version != null ? String(tc.version) : "";
+
+  // Si no hay nada en tutorContext, devolvemos CA si existe.
+  const hasAny =
+    objetivo || contextoCompleto || netlist || modoExperto || acRefs.length > 0 || version;
+
+  if (!hasAny) return caFallback;
+
+  const parts = [];
+
+  // Contexto general / objetivo
+  if (objetivo) parts.push(`OBJETIVO:\n${objetivo}`);
+
+  // Contexto completo (puede incluir “Instrucciones…” y ACs ya redactadas)
+  if (contextoCompleto) parts.push(`CONTEXTO DEL EJERCICIO:\n${contextoCompleto}`);
+
+  // Netlist separado (si lo guardas aparte)
+  if (netlist) parts.push(`NETLIST:\n${netlist}`);
+
+  // Modo experto separado
+  if (modoExperto) parts.push(`MODO DE PENSAR EXPERTO:\n${modoExperto}`);
+
+  // Referencias a ACs (solo ids)
+  if (acRefs.length > 0) parts.push(`ACs RELEVANTES (IDs): ${acRefs.join(", ")}`);
+
+  if (version) parts.push(`VERSIÓN CONTEXTO: ${version}`);
+
+  return parts.join("\n\n");
+}
+
+function buildTutorRulesBlock() {
+  return `
+Eres un tutor socrático para ayudar al estudiante a razonar.
+- Responde SIEMPRE en español.
+- NO des la solución final directamente.
+- Haz preguntas cortas y concretas (1–2 por turno).
+- Si el estudiante se equivoca, guía para que detecte el error.
+- Mantén un tono claro, paciente y técnico.
+`.trim();
+}
+
+function buildExerciseInfoBlock(ejercicio) {
+  const titulo = safeStr(ejercicio?.titulo);
+  const enunciado = safeStr(ejercicio?.enunciado);
+  const concepto = safeStr(ejercicio?.concepto);
+  const asignatura = safeStr(ejercicio?.asignatura);
+  const nivel = ejercicio?.nivel != null ? String(ejercicio.nivel) : "";
+  const imagen = safeStr(ejercicio?.imagen);
+
+  return `
+EJERCICIO ACTUAL:
+${titulo ? `Título: ${titulo}` : ""}
+${asignatura ? `Asignatura: ${asignatura}` : ""}
+${concepto ? `Concepto: ${concepto}` : ""}
+${nivel ? `Nivel: ${nivel}` : ""}
+${enunciado ? `Enunciado: ${enunciado}` : ""}
+${imagen ? `Imagen asociada (referencia): ${imagen}` : ""}
+`.trim();
 }
 
 /**
- * Construye el system prompt final para el tutor.
- * IMPORTANTE (rendimiento): NO expandir el catálogo completo de AC.
- * Solo incluimos IDs + nombre para no inflar tokens.
+ * Prompt del sistema:
+ * - Usa el objeto tutorContext del schema real
+ * - Reglas globales una sola vez
+ * - Metadatos del ejercicio
  */
 function buildTutorSystemPrompt(ejercicio) {
-  // Si no hay ejercicio, devolvemos el prompt base
-  if (!ejercicio) return PROMPT_BASE;
+  const tutorContextBlock = buildTutorContextBlock(ejercicio);
+  const rules = buildTutorRulesBlock();
+  const ejercicioInfo = buildExerciseInfoBlock(ejercicio);
 
-  const partes = [PROMPT_BASE];
-
-  const appendix = modelStyleAppendix();
-  if (appendix) partes.push(appendix);
-
-  // Título y enunciado (útiles para el tutor)
-  if (ejercicio.titulo) partes.push(`TÍTULO DEL EJERCICIO:\n${ejercicio.titulo}`);
-  if (ejercicio.enunciado) partes.push(`ENUNCIADO:\n${ejercicio.enunciado}`);
-
-  // Nuevo formato recomendado (tutorContext)
-  const ctx = ejercicio.tutorContext;
-
-  if (ctx) {
-    if (ctx.objetivo) partes.push(`OBJETIVO DEL EJERCICIO:\n${ctx.objetivo}`);
-    if (ctx.netlist) partes.push(`NETLIST / DATOS DEL CIRCUITO:\n${ctx.netlist}`);
-    if (ctx.modoExperto) partes.push(`MODO DE PENSAR DEL EXPERTO:\n${ctx.modoExperto}`);
-
-    // ACs: versión LIGERA (solo ID + nombre)
-    if (Array.isArray(ctx.ac_refs) && ctx.ac_refs.length > 0) {
-      const acsLigero = ctx.ac_refs
-        .map((id) => AC_CATALOG[id])
-        .filter(Boolean)
-        .map((ac) => `${ac.id}: ${ac.name}`);
-
-      if (acsLigero.length > 0) {
-        partes.push(
-          `CONCEPCIONES ALTERNATIVAS A CONSIDERAR (IDs):\n- ${acsLigero.join("\n- ")}`
-        );
-      }
-    }
-  } else if (ejercicio.contextoTutor) {
-    // Legacy (por si aún existe en Mongo en algún ejercicio)
-    partes.push(`CONTEXTO DEL EJERCICIO (LEGACY):\n${ejercicio.contextoTutor}`);
-  }
-
-  // Reglas finales de salida (compactas)
-  partes.push(
-    [
-      "INSTRUCCIONES DE RESPUESTA:",
-      "- Guía al estudiante mediante preguntas.",
-      "- No proporciones la solución directamente.",
-      "- Si detectas una concepción alternativa, indícalo de forma breve y reconduce con preguntas.",
-      "- Mantén enfoque socrático.",
-    ].join("\n")
-  );
-
-  return partes.join("\n\n");
+  return joinBlocks([tutorContextBlock, rules, ejercicioInfo]);
 }
 
 module.exports = { buildTutorSystemPrompt };

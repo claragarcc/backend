@@ -1,12 +1,14 @@
 // backend/index.js
-require("dotenv").config();
+
+const path = require("path");
+
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const session = require("express-session");
 const MongoStore = require("connect-mongo");
-const path = require("path");
 
 
 
@@ -17,6 +19,7 @@ const interaccionesRoutes = require("./routes/interacciones");
 const ollamaChatRoutes = require("./routes/ollamaChatRoutes");
 const resultadoRoutes = require("./routes/resultados");
 const progresoRoutes = require("./routes/progresoRoutes");
+
 
 // 🔹 Router de autenticación (CAS + modo demo)
 const { router: authRouter, requireAuth } = require("./authRoutes");
@@ -77,6 +80,7 @@ app.use("/api/ollama", ollamaChatRoutes);
 app.use("/api/progreso", progresoRoutes);
 app.use("/api/resultados", resultadoRoutes);
 
+
 // ====== Ejemplo de ruta PROTEGIDA (necesita sesión válida) ======
 app.post("/api/llm/query", requireAuth, (req, res) => {
   res.json({ ok: true, user: req.session.user });
@@ -119,5 +123,36 @@ if (fs.existsSync(staticDir)) {
 
 // ====== Arranque servidor ======
 app.listen(port, "0.0.0.0", () => {
+  const axios = require("axios");
+
+async function warmupOllama() {
+  const url = process.env.OLLAMA_API_URL || "http://127.0.0.1:11434";
+  const model = process.env.OLLAMA_MODEL || "qwen2.5:latest";
+  const keepAlive = process.env.OLLAMA_KEEP_ALIVE || "2h";
+
+  try {
+    console.log("[OLLAMA] Warmup...");
+    await axios.post(
+      `${url}/api/chat`,
+      {
+        model,
+        stream: false,
+        keep_alive: keepAlive,
+        messages: [
+          { role: "system", content: "Responde solo con OK." },
+          { role: "user", content: "OK" },
+        ],
+        options: { num_predict: 1, temperature: 0 },
+      },
+      { timeout: 0 }
+    );
+    console.log("[OLLAMA] Warmup OK");
+  } catch (e) {
+    console.warn("[OLLAMA] Warmup FAILED:", e?.message || e);
+  }
+}
+
+warmupOllama();
+
   console.log(`Servidor escuchando en el puerto ${port}`);
 });
