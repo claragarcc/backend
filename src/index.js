@@ -125,34 +125,49 @@ if (fs.existsSync(staticDir)) {
 app.listen(port, "0.0.0.0", () => {
   const axios = require("axios");
 
-async function warmupOllama() {
-  const url = process.env.OLLAMA_API_URL || "http://127.0.0.1:11434";
-  const model = process.env.OLLAMA_MODEL || "qwen2.5:latest";
-  const keepAlive = process.env.OLLAMA_KEEP_ALIVE || "2h";
+  async function warmupOllamaUPV() {
+    // ✅ SOLO UPV (si no está configurado, no hace warmup)
+    const upvUrl =
+      process.env.OLLAMA_API_URL_UPV ||
+      process.env.OLLAMA_BASE_URL_UPV;
 
-  try {
-    console.log("[OLLAMA] Warmup...");
-    await axios.post(
-      `${url}/api/chat`,
-      {
-        model,
-        stream: false,
-        keep_alive: keepAlive,
-        messages: [
-          { role: "system", content: "Responde solo con OK." },
-          { role: "user", content: "OK" },
-        ],
-        options: { num_predict: 1, temperature: 0 },
-      },
-      { timeout: 0 }
-    );
-    console.log("[OLLAMA] Warmup OK");
-  } catch (e) {
-    console.warn("[OLLAMA] Warmup FAILED:", e?.message || e);
+    if (!upvUrl) {
+      console.log("[OLLAMA] Warmup SKIP (OLLAMA_API_URL_UPV no definido).");
+      return;
+    }
+
+    const url = String(upvUrl).replace(/\/$/, "");
+    const model = process.env.OLLAMA_MODEL || "qwen2.5:latest";
+    const keepAlive = process.env.OLLAMA_KEEP_ALIVE || "60m";
+
+    try {
+      console.log("[OLLAMA] Warmup (UPV)...");
+      await axios.post(
+        `${url}/api/chat`,
+        {
+          model,
+          stream: false,
+          keep_alive: keepAlive,
+          messages: [
+            { role: "system", content: "Responde solo con OK." },
+            { role: "user", content: "OK" },
+          ],
+          options: { num_predict: 1, temperature: 0 },
+        },
+        {
+          // ✅ corta rápido si UPV no responde (no se queda colgado)
+          timeout: 5000,
+        }
+      );
+      console.log("[OLLAMA] Warmup OK (UPV)");
+    } catch (e) {
+      console.warn("[OLLAMA] Warmup FAILED (UPV):", e?.message || e);
+    }
   }
-}
 
-warmupOllama();
+  // ✅ Muy importante: NO lo awaited -> el servidor arranca igual de rápido
+  warmupOllamaUPV();
+
 
   console.log(`Servidor escuchando en el puerto ${port}`);
 });

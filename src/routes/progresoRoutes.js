@@ -63,7 +63,7 @@ router.get("/:userId", async (req, res) => {
       interacciones: eficiencia[c].total / eficiencia[c].count
     }));
 
-    // C) Resumen semanal robusto
+    // C) Resumen semanal (✅ ejercicios únicos, no intentos)
     const hoy = new Date();
     const haceUnaSemana = new Date();
     haceUnaSemana.setDate(hoy.getDate() - 7);
@@ -76,8 +76,23 @@ router.get("/:userId", async (req, res) => {
       resultadosSemana.map((r) => r.ejercicio_id?.concepto).filter(Boolean)
     );
 
+    // ✅ Set de ejercicios únicos en la semana
+    const ejerciciosUnicosSemana = new Set(
+      resultadosSemana
+        .map((r) => {
+          // si está populateado, ejercicio_id será objeto con _id
+          const idPop = r.ejercicio_id?._id?.toString?.();
+          if (idPop) return idPop;
+
+          // si NO está populateado (por cualquier motivo), puede ser ObjectId directo
+          const idDirecto = r.ejercicio_id?.toString?.();
+          return idDirecto || null;
+        })
+        .filter(Boolean)
+    );
+
     const resumenSemanal = {
-      ejerciciosCompletados: resultadosSemana.length,
+      ejerciciosCompletados: ejerciciosUnicosSemana.size, // ✅ únicos
       conceptosDistintos: conceptosSemana.size,
       rachaDias: 0
     };

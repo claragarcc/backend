@@ -1,74 +1,92 @@
+// backend/src/utils/promptBuilder.js
+
+const FIN_TOKEN = "<FIN_EJERCICIO>";
+
 function safeStr(x) {
   if (typeof x !== "string") return "";
   return x.trim();
 }
 
-function joinBlocks(blocks) {
-  return blocks.map(safeStr).filter(Boolean).join("\n\n");
+function pickFirstStr(obj, keys) {
+  for (const k of keys) {
+    const v = safeStr(obj?.[k]);
+    if (v) return v;
+  }
+  return "";
 }
 
-function buildTutorContextBlock(ejercicio) {
+function normId(s) {
+  return String(s || "")
+    .toUpperCase()
+    .replace(/\s+/g, "")
+    .trim();
+}
+
+function formatList(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return "";
+  return arr.filter(Boolean).join(", ");
+}
+
+function buildTutorSystemPrompt(ejercicio) {
+  // Campos base del ejercicio
+  const titulo = pickFirstStr(ejercicio, ["titulo", "nombre", "name"]);
+  const enunciado = pickFirstStr(ejercicio, ["enunciado", "texto", "statement", "descripcion"]);
+  const concepto = pickFirstStr(ejercicio, ["concepto", "tema", "topic"]);
+  const asignatura = pickFirstStr(ejercicio, ["asignatura", "subject"]);
+  const nivel = ejercicio?.nivel != null ? String(ejercicio.nivel) : "";
+  const imagen = pickFirstStr(ejercicio, ["imagen", "image", "imageUrl", "img"]);
+
+  // TutorContext estructurado
   const tc = ejercicio?.tutorContext || {};
-
-  // Si por lo que sea tienes el contexto largo en otro sitio (CA), lo metemos como fallback.
-  const caFallback = safeStr(ejercicio?.CA);
-
-  const objetivo = safeStr(tc.objetivo);
-  const contextoCompleto = safeStr(tc.contextoCompleto);
-  const netlist = safeStr(tc.netlist);
-  const modoExperto = safeStr(tc.modoExperto);
-
-  const acRefs = Array.isArray(tc.ac_refs) ? tc.ac_refs.filter((x) => typeof x === "string" && x.trim()) : [];
+  const objetivo = pickFirstStr(tc, ["objetivo"]);
+  const netlist = pickFirstStr(tc, ["netlist"]);
+  const modoExperto = pickFirstStr(tc, ["modoExperto"]);
   const version = tc?.version != null ? String(tc.version) : "";
 
-  // Si no hay nada en tutorContext, devolvemos CA si existe.
-  const hasAny =
-    objetivo || contextoCompleto || netlist || modoExperto || acRefs.length > 0 || version;
+  // IDs de AC relevantes (solo IDs, no el objeto entero)
+  const acRefs = Array.isArray(tc?.ac_refs) ? tc.ac_refs.map(normId).filter(Boolean) : [];
 
-  if (!hasAny) return caFallback;
+  // ✅ Respuesta correcta (lista cerrada para este ejercicio)
+  const respuestaCorrecta = Array.isArray(tc?.respuestaCorrecta)
+    ? tc.respuestaCorrecta.map(normId).filter(Boolean)
+    : [];
 
-  const parts = [];
-
-  // Contexto general / objetivo
-  if (objetivo) parts.push(`OBJETIVO:\n${objetivo}`);
-
-  // Contexto completo (puede incluir “Instrucciones…” y ACs ya redactadas)
-  if (contextoCompleto) parts.push(`CONTEXTO DEL EJERCICIO:\n${contextoCompleto}`);
-
-  // Netlist separado (si lo guardas aparte)
-  if (netlist) parts.push(`NETLIST:\n${netlist}`);
-
-  // Modo experto separado
-  if (modoExperto) parts.push(`MODO DE PENSAR EXPERTO:\n${modoExperto}`);
-
-  // Referencias a ACs (solo ids)
-  if (acRefs.length > 0) parts.push(`ACs RELEVANTES (IDs): ${acRefs.join(", ")}`);
-
-  if (version) parts.push(`VERSIÓN CONTEXTO: ${version}`);
-
-  return parts.join("\n\n");
-}
-
-function buildTutorRulesBlock() {
-  return `
-Eres un tutor socrático para ayudar al estudiante a razonar.
+  const rules = `
+Eres un tutor socrático para ayudar al estudiante a razonar sobre circuitos (Ley de Ohm).
 - Responde SIEMPRE en español.
 - NO des la solución final directamente.
-- Haz preguntas cortas y concretas (1–2 por turno).
-- Si el estudiante se equivoca, guía para que detecte el error.
+- No uses analogías
+- Si el estudiante se equivoca, guía con preguntas socráticas para que detecte el error  y le guíen hacia el modo de pensar de un experto.
 - Mantén un tono claro, paciente y técnico.
+
+CRITERIO DE FIN (MUY IMPORTANTE):
+- En el momento que el estudiante da la respuesta correcta del ejercicio (diga exactamente las resistencias), indícalo brevemente y añade EXACTAMENTE el token ${FIN_TOKEN} al final de tu mensaje (sin espacios extra ni mostrarlo al usuario).
+- La respuesta correcta se define por "RESPUESTA CORRECTA (RESISTENCIAS)".
+- Considera correcta SOLO si el estudiante incluye TODAS esas resistencias y NO añade resistencias extra.
+- Da por finalizado el ejercicio en el momento que el estudiante da la respuesta correcta, aunque haya errores previos en la conversación.
 `.trim();
-}
 
-function buildExerciseInfoBlock(ejercicio) {
-  const titulo = safeStr(ejercicio?.titulo);
-  const enunciado = safeStr(ejercicio?.enunciado);
-  const concepto = safeStr(ejercicio?.concepto);
-  const asignatura = safeStr(ejercicio?.asignatura);
-  const nivel = ejercicio?.nivel != null ? String(ejercicio.nivel) : "";
-  const imagen = safeStr(ejercicio?.imagen);
+  const contexto = `
+OBJETIVO:
+${objetivo || "(no definido)"}
 
-  return `
+NETLIST:
+${netlist || "(no definido)"}
+
+MODO DE PENSAR EXPERTO:
+${modoExperto || "(no definido)"}
+
+ACs RELEVANTES (IDs):
+${acRefs.length ? formatList(acRefs) : "(ninguna)"}
+
+RESPUESTA CORRECTA (RESISTENCIAS):
+${respuestaCorrecta.length ? formatList(respuestaCorrecta) : "(no definida)"}
+
+VERSIÓN CONTEXTO:
+${version || "(no definida)"}
+`.trim();
+
+  const ejercicioInfo = `
 EJERCICIO ACTUAL:
 ${titulo ? `Título: ${titulo}` : ""}
 ${asignatura ? `Asignatura: ${asignatura}` : ""}
@@ -77,20 +95,8 @@ ${nivel ? `Nivel: ${nivel}` : ""}
 ${enunciado ? `Enunciado: ${enunciado}` : ""}
 ${imagen ? `Imagen asociada (referencia): ${imagen}` : ""}
 `.trim();
-}
 
-/**
- * Prompt del sistema:
- * - Usa el objeto tutorContext del schema real
- * - Reglas globales una sola vez
- * - Metadatos del ejercicio
- */
-function buildTutorSystemPrompt(ejercicio) {
-  const tutorContextBlock = buildTutorContextBlock(ejercicio);
-  const rules = buildTutorRulesBlock();
-  const ejercicioInfo = buildExerciseInfoBlock(ejercicio);
-
-  return joinBlocks([tutorContextBlock, rules, ejercicioInfo]);
+  return [contexto, rules, ejercicioInfo].filter(Boolean).join("\n\n");
 }
 
 module.exports = { buildTutorSystemPrompt };

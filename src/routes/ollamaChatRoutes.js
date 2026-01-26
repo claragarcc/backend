@@ -51,6 +51,9 @@ const DEBUG_DUMP_PATH = process.env.DEBUG_DUMP_PATH || "./debug_ollama";
 // TLS (solo si hiciera falta en DEV)
 const ALLOW_INSECURE_TLS = process.env.OLLAMA_INSECURE_TLS === "1";
 
+// Token fin (para que el frontend lo detecte)
+const FIN_TOKEN = "<FIN_EJERCICIO>";
+
 // =====================
 // Helpers
 // =====================
@@ -132,6 +135,34 @@ function axiosConfigForBaseUrl(baseUrl) {
     };
   }
   return {};
+}
+
+// =====================
+// ✅ Validación determinista (respuesta correcta)
+// =====================
+function extractResistencias(text) {
+  if (typeof text !== "string") return [];
+  const matches = text.toUpperCase().match(/\bR\d+\b/g);
+  if (!matches) return [];
+  return [...new Set(matches.map((x) => x.trim()))];
+}
+
+function sameSet(a, b) {
+  const A = new Set((a || []).map((x) => String(x).toUpperCase().trim()).filter(Boolean));
+  const B = new Set((b || []).map((x) => String(x).toUpperCase().trim()).filter(Boolean));
+  if (A.size !== B.size) return false;
+  for (const x of A) if (!B.has(x)) return false;
+  return true;
+}
+
+function isCorrectAnswerForExercise({ userText, ejercicio }) {
+  const correct = ejercicio?.tutorContext?.respuestaCorrecta;
+  if (!Array.isArray(correct) || correct.length === 0) return false;
+
+  const userSet = extractResistencias(userText);
+  if (userSet.length === 0) return false;
+
+  return sameSet(userSet, correct);
 }
 
 // ==============================
@@ -338,6 +369,28 @@ router.post("/chat/stream", async (req, res) => {
       { $push: { conversacion: { role: "user", content: text } }, $set: { fin: new Date() } }
     );
 
+    // ============================
+    // ✅ CIERRE DETERMINISTA (SIN LLM)
+    // ============================
+    const correctNow = isCorrectAnswerForExercise({ userText: text, ejercicio });
+
+    if (correctNow) {
+      // Mensaje corto y token EXACTO al final (sin espacios extra)
+      const assistant = `Correcto. Has dado la respuesta exacta.${FIN_TOKEN}`;
+
+      // Enviamos al cliente como stream “normal”
+      sseSend(res, { chunk: assistant });
+
+      // Guardamos y cerramos
+      clearTimeout(maxTimer);
+      await finalizeOnce({
+        interaccionId: iid,
+        fullAssistant: assistant,
+        reason: "deterministic_finish",
+      });
+      return;
+    }
+
     // Construir messages: system + últimos N
     const systemPrompt = buildSystemPrompt(ejercicio);
     const history = await loadLastMessages(iid);
@@ -408,7 +461,6 @@ router.post("/chat/stream", async (req, res) => {
 
           if (json?.done) {
             doneSeen = true;
-            // No hacemos return “duro”, dejamos que cierre y finalizeOnce evite dobles.
             endStream("done");
             continue;
           }
@@ -487,6 +539,27 @@ router.post("/chat/start-exercise", async (req, res) => {
       fin: new Date(),
       conversacion: [{ role: "user", content: firstMsg }],
     });
+
+    // ✅ Si el primer mensaje ya es respuesta correcta, cerramos determinista también aquí
+    if (isCorrectAnswerForExercise({ userText: firstMsg, ejercicio })) {
+      const assistant = `Correcto. Has dado la respuesta exacta.${FIN_TOKEN}`;
+
+      await Interaccion.updateOne(
+        { _id: interaccion._id },
+        { $push: { conversacion: { role: "assistant", content: assistant } }, $set: { fin: new Date() } }
+      );
+
+      return res.status(201).json({
+        message: "Interacción iniciada (resuelta al instante)",
+        mode,
+        interaccionId: interaccion._id,
+        assistantMessage: assistant,
+        fullHistory: [
+          { role: "user", content: firstMsg },
+          { role: "assistant", content: assistant },
+        ],
+      });
+    }
 
     const ollamaResp = await axios.post(
       `${baseUrl}/api/chat`,
