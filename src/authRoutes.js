@@ -1,15 +1,16 @@
 // backend/authRoutes.js
+// ✅ CAS OAuth2 + modo DEMO
+// ✅ Compatible con Node 18+ (fetch nativo) y con CAS_BASE_URL que incluye /cas
+
 const { Router } = require("express");
 const crypto = require("crypto");
-const fetch = require("node-fetch");
 const { AuthorizationCode } = require("simple-oauth2");
 const Usuario = require("./models/usuario");
-require("dotenv").config();
 
 const router = Router();
 
 const {
-  CAS_BASE_URL = "https://casdev.upv.es/cas",
+  CAS_BASE_URL = "https://caspre.upv.es/cas",
   OAUTH_CLIENT_ID,
   OAUTH_CLIENT_SECRET,
   OAUTH_REDIRECT_URI,
@@ -18,16 +19,30 @@ const {
   DEV_BYPASS_AUTH,
 } = process.env;
 
-// Cliente OAuth2 apuntando a CAS
+// ✅ Validación mínima de configuración (evita client_id=undefined)
+function assertEnv(name, value) {
+  if (!value) {
+    console.error(`[AUTH ENV] Falta variable ${name}. Revisa tu .env cargado.`);
+  }
+}
+assertEnv("OAUTH_CLIENT_ID", OAUTH_CLIENT_ID);
+assertEnv("OAUTH_REDIRECT_URI", OAUTH_REDIRECT_URI);
+
+// ✅ CAS_BASE_URL incluye /cas, pero simple-oauth2 requiere origin + paths separados
+const casUrl = new URL(CAS_BASE_URL);
+const CAS_ORIGIN = casUrl.origin; // https://caspre.upv.es
+const CAS_PATH = casUrl.pathname.replace(/\/$/, ""); // /cas
+
+// ✅ Cliente OAuth2 apuntando a CAS (con /cas en paths)
 const oauthClient = new AuthorizationCode({
   client: {
     id: OAUTH_CLIENT_ID,
     secret: OAUTH_CLIENT_SECRET,
   },
   auth: {
-    tokenHost: CAS_BASE_URL,
-    tokenPath: "/oauth2.0/accessToken",
-    authorizePath: "/oauth2.0/authorize",
+    tokenHost: CAS_ORIGIN,
+    authorizePath: `${CAS_PATH}/oauth2.0/authorize`,
+    tokenPath: `${CAS_PATH}/oauth2.0/accessToken`,
   },
   http: { json: true },
 });
@@ -72,24 +87,50 @@ router.get("/api/auth/cas/callback", async (req, res) => {
       return res.status(400).send("Solicitud inválida (state/code).");
     }
 
-    // code -> access_token
     const tokenParams = {
       code,
       redirect_uri: OAUTH_REDIRECT_URI,
       scope: OAUTH_SCOPES,
     };
 
-    const accessToken = await oauthClient.getToken(tokenParams);
-    const rawToken = accessToken.token.access_token;
+    // ✅ Intercambio code -> access_token (con debug detallado)
+    let accessToken;
+    try {
+      accessToken = await oauthClient.getToken(tokenParams);
+    } catch (e) {
+      console.error("[CAS TOKEN ERROR]", {
+        message: e?.message,
+        status: e?.response?.status,
+        data: e?.response?.data,
+        headers: e?.response?.headers,
+      });
 
-    // Perfil
-    const profileResp = await fetch(`${CAS_BASE_URL}/oauth2.0/profile`, {
+      return res
+        .status(500)
+        .send(
+          "Error token CAS: " +
+            (e?.response?.status ? `HTTP ${e.response.status} ` : "") +
+            (e?.response?.data
+              ? JSON.stringify(e.response.data)
+              : e?.message || "sin detalle")
+        );
+    }
+
+    const rawToken = accessToken?.token?.access_token;
+    if (!rawToken) {
+      console.error("[CAS TOKEN ERROR] access_token vacío:", accessToken);
+      return res.status(500).send("Error token CAS: access_token vacío.");
+    }
+
+    // ✅ Perfil (Node 18+ fetch nativo; NO uses require('node-fetch') en CommonJS)
+    const profileResp = await fetch(`${CAS_ORIGIN}${CAS_PATH}/oauth2.0/profile`, {
       headers: { Authorization: `Bearer ${rawToken}` },
     });
 
     if (!profileResp.ok) {
+      const txt = await profileResp.text().catch(() => "");
       throw new Error(
-        `Fallo al obtener el perfil de CAS: ${profileResp.status} ${profileResp.statusText}`
+        `Fallo al obtener el perfil de CAS: HTTP ${profileResp.status} ${profileResp.statusText} ${txt}`
       );
     }
 
@@ -98,10 +139,10 @@ router.get("/api/auth/cas/callback", async (req, res) => {
     // Normalizar atributos
     const attrs = profile.attributes || profile || {};
     const upvLogin = attrs.login || attrs.uid || profile.id;
-    const email = attrs.email;
-    const nombre = attrs.nombre || attrs.given_name || attrs.name;
-    const apellidos = attrs.apellidos || attrs.family_name;
-    const dni = attrs.dni;
+    const email = attrs.email || null;
+    const nombre = attrs.nombre || attrs.given_name || attrs.name || null;
+    const apellidos = attrs.apellidos || attrs.family_name || null;
+    const dni = attrs.dni || null;
     const grupos = Array.isArray(attrs.grupos) ? attrs.grupos : [];
 
     if (!upvLogin) {
@@ -141,8 +182,20 @@ router.get("/api/auth/cas/callback", async (req, res) => {
 
     return res.redirect(goto);
   } catch (err) {
-    console.error("[CAS FATAL ERROR]", err);
-    return res.status(500).send("Error en callback CAS. Revisa la consola.");
+    console.error("[CAS FATAL ERROR]", {
+      message: err?.message,
+      status: err?.response?.status,
+      data: err?.response?.data,
+      stack: err?.stack,
+    });
+
+    return res.status(500).send(
+      "Error en callback CAS: " +
+        (err?.response?.status ? `HTTP ${err.response.status} ` : "") +
+        (err?.response?.data
+          ? JSON.stringify(err.response.data)
+          : err?.message || "sin detalle")
+    );
   }
 });
 
@@ -158,7 +211,7 @@ router.get("/api/auth/me", (req, res) => {
 
 router.get("/api/auth/logout", (req, res) => {
   req.session.destroy(() => {
-    const url = new URL(`${CAS_BASE_URL}/logout`);
+    const url = new URL(`${CAS_ORIGIN}${CAS_PATH}/logout`);
     if (FRONTEND_BASE_URL) url.searchParams.set("service", FRONTEND_BASE_URL);
     res.redirect(url.toString());
   });
@@ -176,7 +229,6 @@ function requireAuth(req, res, next) {
 
 /* ===================================================================
  * 5. MODO DEMO (sin CAS) → POST /api/auth/dev-login
- *    - ✅ 1 usuario demo NUEVO por sesión (sin clave)
  * =================================================================== */
 router.post("/api/auth/dev-login", async (req, res) => {
   try {
@@ -186,12 +238,11 @@ router.post("/api/auth/dev-login", async (req, res) => {
         .json({ error: "DEV_BYPASS_AUTH deshabilitado en el servidor" });
     }
 
-    // ✅ Si ya hay sesión, devolvemos la misma (misma persona en esa sesión)
+    // Si ya hay sesión, devolvemos la misma
     if (req.session?.user?.id) {
       return res.json({ ok: true, user: req.session.user });
     }
 
-    // ✅ Genera SIEMPRE un usuario demo nuevo (sin body)
     const demoKey = crypto.randomBytes(16).toString("hex");
     const upvLogin = `demo_${demoKey}`;
 
