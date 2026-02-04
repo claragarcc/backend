@@ -10,6 +10,10 @@ const MongoStore = require("connect-mongo");
 const fs = require("fs");
 
 // Rutas
+
+
+
+
 const userRoutes = require("./routes/usuarios");
 const ejerciciosRoutes = require("./routes/ejercicios");
 const interaccionesRoutes = require("./routes/interacciones");

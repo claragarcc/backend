@@ -7,7 +7,7 @@ const https = require("https");
 const Resultado = require("../models/resultado");
 const Interaccion = require("../models/interaccion");
 
-// ✅ Cargar concepciones alternativas (lista cerrada)
+// ✅ Concepciones alternativas (lista cerrada)
 const acData = require("../alternative_conceptions.json");
 const AC_MAP = acData?.alternative_conceptions || {};
 const ALLOWED_AC_IDS = Object.keys(AC_MAP);
@@ -16,50 +16,56 @@ const ALLOWED_AC_IDS_TEXT = ALLOWED_AC_IDS.join(", ");
 const router = express.Router();
 
 /**
- * ✅ Elegimos SIEMPRE URL UPV si existe, si no la genérica.
- * (Esto es clave: antes podías estar llamando a local/fallback sin querer.)
+ * ✅ Base URL Ollama:
+ * - prioriza tu .env actual: OLLAMA_API_URL_UPV
+ * - fallback a OLLAMA_UPV_URL / OLLAMA_API_URL
  */
 const OLLAMA_BASE_URL =
+  process.env.OLLAMA_API_URL_UPV ||
   process.env.OLLAMA_UPV_URL ||
   process.env.OLLAMA_API_URL ||
   "https://ollama.gti-ia.upv.es:443";
 
 /**
- * ✅ Timeout realista para UPV (clasificación no-stream).
- * Ajusta si quieres, pero 20s era demasiado agresivo.
+ * ✅ Timeout realista para clasificación (no stream)
  */
-const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_CLASSIFIER_TIMEOUT_MS || 120000);
+const OLLAMA_TIMEOUT_MS = Number(process.env.OLLAMA_CLASSIFIER_TIMEOUT_MS || 240000);
 
 /**
- * Si en algún momento activas insecureTLS, te lo permite sin romper.
+ * ✅ Insecure TLS: acepta 1/true/on
  */
-const insecureTLS = String(process.env.OLLAMA_INSECURE_TLS || "").toLowerCase() === "on";
-const httpsAgent = insecureTLS
-  ? new https.Agent({ rejectUnauthorized: false })
-  : undefined;
+const insecureTLS = ["1", "true", "on", "yes"].includes(
+  String(process.env.OLLAMA_INSECURE_TLS || "").toLowerCase()
+);
+
+const httpsAgent = insecureTLS ? new https.Agent({ rejectUnauthorized: false }) : undefined;
 
 const ollama = axios.create({
-  baseURL: OLLAMA_BASE_URL,
+  baseURL: String(OLLAMA_BASE_URL).replace(/\/+$/, ""),
   timeout: OLLAMA_TIMEOUT_MS,
-  httpsAgent
+  httpsAgent,
 });
 
 /**
- * Parser robusto: a veces el modelo devuelve texto alrededor.
- * Extrae el primer bloque JSON { ... } si existe.
+ * Extrae el primer bloque JSON { ... } si existe (tolerante a texto alrededor)
  */
 function extractJsonObject(text) {
   if (typeof text !== "string") return null;
   const s = text.trim();
   if (!s) return null;
 
-  // Caso ideal: ya es JSON puro
-  if (s.startsWith("{") && s.endsWith("}")) {
-    try { return JSON.parse(s); } catch { /* continue */ }
+  // Quita fences si aparecen
+  const cleaned = s.replace(/^```(json)?/i, "").replace(/```$/i, "").trim();
+
+  if (cleaned.startsWith("{") && cleaned.endsWith("}")) {
+    try {
+      return JSON.parse(cleaned);
+    } catch {
+      // continue
+    }
   }
 
-  // Caso: JSON embebido en texto
-  const match = s.match(/\{[\s\S]*\}/);
+  const match = cleaned.match(/\{[\s\S]*\}/);
   if (!match) return null;
 
   try {
@@ -68,6 +74,18 @@ function extractJsonObject(text) {
     return null;
   }
 }
+
+async function callClassifier({ model, prompt }) {
+  const r = await ollama.post("/api/chat", {
+    model,
+    stream: false,
+    format: "json",
+    options: { temperature: 0 },
+    messages: [{ role: "user", content: prompt }],
+  });
+  return r?.data?.message?.content;
+}
+
 // GET /api/resultados/completed/:userId
 router.get("/completed/:userId", async (req, res) => {
   try {
@@ -77,35 +95,7 @@ router.get("/completed/:userId", async (req, res) => {
       return res.status(400).json({ message: "ID de usuario inválido." });
     }
 
-    const resultados = await Resultado.find({ usuario_id: userId })
-      .select("ejercicio_id")
-      .lean();
-
-    // IDs únicos de ejercicios completados
-    const completedIds = [
-      ...new Set(resultados.map(r => String(r.ejercicio_id)))
-    ];
-
-    return res.status(200).json(completedIds);
-  } catch (error) {
-    console.error("Error obteniendo ejercicios completados:", error);
-    return res.status(500).json({ message: "Error del servidor." });
-  }
-});
-
-// ✅ GET /api/resultados/completed?userId=xxxx
-// ✅ GET /api/resultados/completed/xxxx
-router.get("/completed", async (req, res) => {
-  try {
-    const userId = req.query.userId;
-
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: "ID de usuario inválido." });
-    }
-
-    const resultados = await Resultado.find({ usuario_id: userId })
-      .select("ejercicio_id")
-      .lean();
+    const resultados = await Resultado.find({ usuario_id: userId }).select("ejercicio_id").lean();
 
     const completedIds = [...new Set(resultados.map((r) => String(r.ejercicio_id)))];
     return res.status(200).json(completedIds);
@@ -114,27 +104,6 @@ router.get("/completed", async (req, res) => {
     return res.status(500).json({ message: "Error del servidor." });
   }
 });
-
-router.get("/completed/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-
-    if (!userId || !mongoose.Types.ObjectId.isValid(userId)) {
-      return res.status(400).json({ message: "ID de usuario inválido." });
-    }
-
-    const resultados = await Resultado.find({ usuario_id: userId })
-      .select("ejercicio_id")
-      .lean();
-
-    const completedIds = [...new Set(resultados.map((r) => String(r.ejercicio_id)))];
-    return res.status(200).json(completedIds);
-  } catch (error) {
-    console.error("Error obteniendo ejercicios completados:", error);
-    return res.status(500).json({ message: "Error del servidor." });
-  }
-});
-
 
 // POST /api/resultados/finalizar
 router.post("/finalizar", async (req, res) => {
@@ -166,15 +135,13 @@ router.post("/finalizar", async (req, res) => {
         ? conversacion.map((m) => `${m.role}: ${m.content}`).join("\n")
         : "Conversación vacía.";
 
-    // ====== PROMPT CLASIFICADOR ======
-    const promptParaOllama = `
+    const promptBase = `
 Eres un asistente que clasifica concepciones alternativas (AC) en un diálogo de tutoría.
 
 REGLAS ESTRICTAS (OBLIGATORIAS):
 - Devuelve ÚNICAMENTE JSON válido.
 - No escribas ningún texto fuera del JSON.
 - No incluyas explicaciones, comentarios ni markdown.
-- Si incumples el formato, la respuesta se considerará inválida.
 
 Solo puedes devolver IDs de esta lista cerrada:
 ${ALLOWED_AC_IDS_TEXT}
@@ -182,7 +149,7 @@ ${ALLOWED_AC_IDS_TEXT}
 Devuelve como máximo 3 IDs.
 Si no detectas ninguna con claridad, devuelve [].
 
-FORMATO EXACTO DE RESPUESTA:
+FORMATO EXACTO:
 {
   "analisis": "1-2 frases muy cortas",
   "consejo": "1 frase muy corta",
@@ -195,29 +162,33 @@ ${conversacionTexto}
 ---
 `.trim();
 
-    // ====== IA opcional (si falla, guardamos igualmente métricas objetivas) ======
+    const promptRetry = `
+DEVUELVE SOLO UN OBJETO JSON VÁLIDO. SIN TEXTO ADICIONAL. SIN MARKDOWN.
+${promptBase}
+`.trim();
+
     let analisisIA = null;
     let consejoIA = null;
     let errores = [];
+    let classifierStatus = "skipped"; // ok | fail_timeout | fail_invalid_json | skipped
 
-    // Modelo para clasificar: puedes separar del modelo tutor si quieres
     const model = process.env.OLLAMA_CLASSIFIER_MODEL || process.env.OLLAMA_MODEL;
 
     try {
-      // 1) Llamada a Ollama (no stream)
-      const ollamaResponse = await ollama.post("/api/chat", {
-        model,
-        messages: [{ role: "user", content: promptParaOllama }],
-        format: "json",
-        stream: false
-      });
-
-      const content = ollamaResponse?.data?.message?.content;
-      const parsed = extractJsonObject(content);
+      const content1 = await callClassifier({ model, prompt: promptBase });
+      let parsed = extractJsonObject(content1);
 
       if (!parsed) {
+        const content2 = await callClassifier({ model, prompt: promptRetry });
+        parsed = extractJsonObject(content2);
+      }
+
+      if (!parsed) {
+        classifierStatus = "fail_invalid_json";
         throw new Error("Clasificador devolvió contenido no-JSON o JSON inválido.");
       }
+
+      classifierStatus = "ok";
 
       if (typeof parsed.analisis === "string" && parsed.analisis.trim()) {
         analisisIA = parsed.analisis.trim();
@@ -235,20 +206,24 @@ ${conversacionTexto}
 
       errores = acsFiltrados.map((id) => ({
         etiqueta: id,
-        texto: AC_MAP[id]?.name || id
+        texto: AC_MAP[id]?.name || id,
       }));
     } catch (e) {
-      // ✅ MUY IMPORTANTE: si falla, deja rastro mínimo para que NO salga vacío siempre
-      // (así verás “algo” en dashboard y sabrás que el clasificador falló)
-      console.error("[RESULTADOS] Clasificador AC falló:", e?.message || e);
+      const msg = String(e?.message || e);
+      const isTimeout = msg.toLowerCase().includes("timeout") || e?.code === "ECONNABORTED";
+      classifierStatus = isTimeout ? "fail_timeout" : classifierStatus;
 
-      // Si quieres que quede vacío cuando falla, comenta este bloque.
-      // Yo lo dejo para depurar y para que el dashboard muestre señal.
+      console.error("[RESULTADOS] Clasificador AC falló:", msg);
+
       if (numMensajes > 0) {
-        errores = [{
-          etiqueta: "AC_UNK",
-          texto: "No se pudo clasificar (timeout o formato inválido)"
-        }];
+        errores = [
+          {
+            etiqueta: "AC_UNK",
+            texto: isTimeout
+              ? "No se pudo clasificar (timeout)"
+              : "No se pudo clasificar (formato inválido)",
+          },
+        ];
       }
     }
 
@@ -260,19 +235,20 @@ ${conversacionTexto}
       numMensajes,
       analisisIA,
       consejoIA,
-      errores
+      errores,
     });
 
     await nuevoResultado.save();
 
     return res.status(200).json({
       message: "Resultado guardado con éxito.",
+      classifierStatus,
       saved: {
         numMensajes,
         analisisIA: Boolean(analisisIA),
         consejoIA: Boolean(consejoIA),
-        errores: (errores || []).map((x) => x.etiqueta)
-      }
+        errores: (errores || []).map((x) => x.etiqueta),
+      },
     });
   } catch (error) {
     console.error("Error al finalizar resultado:", error);
